@@ -6,8 +6,14 @@ authors = ["aaronfeingold <ajfeingold88@gmail.com>"]
 license = "MIT"
 readme = "README.md"
 
+[tool.poetry.scripts]
+linked-in-scraper = "linked_in_scraper.main:main"
+
 [tool.poetry.dependencies]
 python = "^3.11"
+click = "^8.1.8"
+pandas = "^2.2.3"
+python-jobspy = "^1.1.76"
 
 
 [build-system]
