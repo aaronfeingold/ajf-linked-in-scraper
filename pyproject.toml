@@ -1,0 +1,15 @@
+[tool.poetry]
+name = "linked-in-scraper"
+version = "0.1.0"
+description = "Trying to get a job? Search smarter not harder."
+authors = ["aaronfeingold <ajfeingold88@gmail.com>"]
+license = "MIT"
+readme = "README.md"
+
+[tool.poetry.dependencies]
+python = "^3.11"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
