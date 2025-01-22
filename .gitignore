@@ -35,3 +35,5 @@ ENV/
 data/
 *.csv
 
+# MACOS
+.DS_Store
