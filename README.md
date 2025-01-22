@@ -13,3 +13,6 @@
 - Poetry
 - Pandas
 
+## Development
+
+- This project uses [Poetry](https://python-poetry.org/docs/basic-usage/). See link for more details.
