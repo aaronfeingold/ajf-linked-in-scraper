@@ -4,20 +4,46 @@ import pandas as pd
 import os
 import time
 
+
 @click.command()
-@click.option('--search-term', required=True, help='Job search query')
-@click.option('--location', required=True, help='Job location')
-@click.option('--site', multiple=True, type=click.Choice(['linkedin', 'indeed', 'glassdoor']), default=['linkedin'], help='Job sites to search')
-@click.option('--results-wanted', default=100, help='Total number of results to fetch')
-@click.option('--distance', default=25, help='Distance radius for job search')
-@click.option('--job-type', type=click.Choice(['fulltime', 'parttime', 'contract', 'internship']), default='fulltime', help='Type of job')
-@click.option('--country', default='UK', help='Country code for Indeed search')
-@click.option('--fetch-description/--no-fetch-description', default=True, help='Fetch full job description for LinkedIn')
-@click.option('--proxies', multiple=True, default=None, help="Proxy addresses to use. Can be specified multiple times. E.g. --proxies '208.195.175.46:65095' --proxies '208.195.175.45:65095'")
-@click.option('--batch-size', default=30, help='Number of results to fetch in each batch')
-@click.option('--sleep-time', default=100, help='Base sleep time between batches in seconds')
-@click.option('--max-retries', default=3, help='Maximum retry attempts per batch')
-@click.option('--output-dir', default='data', help='Directory to save output CSV')
+@click.option("--search-term", required=True, help="Job search query")
+@click.option("--location", required=True, help="Job location")
+@click.option(
+    "--site",
+    multiple=True,
+    type=click.Choice(["linkedin", "indeed", "glassdoor"]),
+    default=["linkedin"],
+    help="Job sites to search",
+)
+@click.option("--results-wanted", default=100, help="Total number of results to fetch")
+@click.option("--hours-old", default="72", help="Age of job posting in hours")
+@click.option("--distance", default=25, help="Distance radius for job search")
+@click.option(
+    "--job-type",
+    type=click.Choice(["fulltime", "parttime", "contract", "internship"]),
+    default="fulltime",
+    help="Type of job",
+)
+@click.option("--country", default="UK", help="Country code for Indeed search")
+@click.option(
+    "--fetch-description/--no-fetch-description",
+    default=True,
+    help="Fetch full job description for LinkedIn",
+)
+@click.option(
+    "--proxies",
+    multiple=True,
+    default=None,
+    help="Proxy addresses to use. Can be specified multiple times. E.g. --proxies '208.195.175.46:65095' --proxies '208.195.175.45:65095'",
+)
+@click.option(
+    "--batch-size", default=30, help="Number of results to fetch in each batch"
+)
+@click.option(
+    "--sleep-time", default=100, help="Base sleep time between batches in seconds"
+)
+@click.option("--max-retries", default=3, help="Maximum retry attempts per batch")
+@click.option("--output-dir", default="data", help="Directory to save output CSV")
 def main(search_term, location, site, results_wanted, distance, job_type, country,
          fetch_description, proxies, batch_size, sleep_time, max_retries, output_dir):
     """Scrape jobs from various job sites with customizable parameters."""
