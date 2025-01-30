@@ -44,8 +44,22 @@ import time
 )
 @click.option("--max-retries", default=3, help="Maximum retry attempts per batch")
 @click.option("--output-dir", default="data", help="Directory to save output CSV")
-def main(search_term, location, site, results_wanted, distance, job_type, country,
-         fetch_description, proxies, batch_size, sleep_time, max_retries, output_dir):
+def main(
+    search_term,
+    location,
+    site,
+    results_wanted,
+    hours_old,
+    distance,
+    job_type,
+    country,
+    fetch_description,
+    proxies,
+    batch_size,
+    sleep_time,
+    max_retries,
+    output_dir,
+):
     """Scrape jobs from various job sites with customizable parameters."""
 
     # Create output directory
@@ -76,6 +90,7 @@ def main(search_term, location, site, results_wanted, distance, job_type, countr
                     results_wanted=min(batch_size, results_wanted - len(all_jobs)),
                     offset=offset,
                     proxies=proxies,
+                    hours_old=hours_old,
                 )
 
                 all_jobs.extend(jobs.to_dict("records"))
@@ -103,6 +118,7 @@ def main(search_term, location, site, results_wanted, distance, job_type, countr
     jobs_df = pd.DataFrame(all_jobs)
     jobs_df.to_csv(csv_filename, index=False)
     click.echo(f"Successfully saved {len(all_jobs)} jobs to {csv_filename}")
+
 
 if __name__ == '__main__':
     main()
