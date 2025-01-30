@@ -16,6 +16,7 @@
 ## Development
 
 - This project uses [Poetry](https://python-poetry.org/docs/basic-usage/). See link for more details.
+  - FYI: on `poetry install` if the dependency downloading process hangs up in 'pending' for a while, [try these solutions](https://stackoverflow.com/questions/74960707/poetry-stuck-in-infinite-install-update)
 
 ## Usage
 

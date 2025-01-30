@@ -21,10 +21,10 @@ import time
 def main(search_term, location, site, results_wanted, distance, job_type, country,
          fetch_description, proxies, batch_size, sleep_time, max_retries, output_dir):
     """Scrape jobs from various job sites with customizable parameters."""
-    
+
     # Create output directory
     os.makedirs(output_dir, exist_ok=True)
-    
+
     # Generate unique filename
     counter = 0
     while os.path.exists(f"{output_dir}/jobs_{counter}.csv"):
@@ -79,5 +79,4 @@ def main(search_term, location, site, results_wanted, distance, job_type, countr
     click.echo(f"Successfully saved {len(all_jobs)} jobs to {csv_filename}")
 
 if __name__ == '__main__':
-    main() 
-
+    main()
