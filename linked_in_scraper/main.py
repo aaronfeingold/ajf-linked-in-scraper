@@ -90,7 +90,6 @@ def update_sheet(service, spreadsheet_id, data_df):
     "--sleep-time", default=100, help="Base sleep time between batches in seconds"
 )
 @click.option("--max-retries", default=3, help="Maximum retry attempts per batch")
-@click.option("--output-dir", default="data", help="Directory to save output CSV")
 def main(
     search_term,
     location,
