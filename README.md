@@ -1,4 +1,4 @@
-# Job Parser
+# AJF-Linked-In-Scraper
 
 - Goal: Scrape LinkedIn to cut narrow down searches, and automate sending resumes
 - Prototype: CLI to produce CSV exported to GoogleSheets
@@ -20,7 +20,12 @@
 
 ## Usage
 
-- This CLI has quite a few options:
+- example:
+```sh
+poetry run linked-in-scraper --search-term "software engineer" --location "New York City" --site "linkedin" --country "USA" --batch-size 50 --sleep-time 20
+```
+
+- That being said, this CLI has quite a few options:
 
 ```
 --search-term: Job search query (required)
