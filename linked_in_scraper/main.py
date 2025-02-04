@@ -36,20 +36,91 @@ def create_new_sheet(service, title):
 def update_sheet(service, spreadsheet_id, data_df):
     """Update Google Sheet with DataFrame content"""
     try:
+        # Create a copy of the DataFrame to avoid modifying the original
+        df_copy = data_df.copy()
+
+        # Convert datetime columns to strings
+        for col in df_copy.select_dtypes(
+            include=["datetime64[ns]", "datetime64[ns, UTC]"]
+        ).columns:
+            df_copy[col] = df_copy[col].dt.strftime("%Y-%m-%d %H:%M:%S")
+
+        # Convert date columns to strings
+        for col in df_copy.select_dtypes(include=["date"]).columns:
+            df_copy[col] = df_copy[col].astype(str)
+
+        # Handle any other non-serializable types
+        for col in df_copy.columns:
+            # Convert any remaining objects to strings if they're not already
+            if df_copy[col].dtype == "object":
+                df_copy[col] = df_copy[col].fillna("").astype(str)
+
         # Convert DataFrame to values list
-        values = [data_df.columns.tolist()] + data_df.values.tolist()
+        values = [df_copy.columns.tolist()] + df_copy.values.tolist()
 
         body = {"values": values}
 
         # Update the sheet
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id, range="A1", valueInputOption="RAW", body=body
-        ).execute()
+        result = (
+            service.spreadsheets()
+            .values()
+            .update(
+                spreadsheetId=spreadsheet_id,
+                range="A1",
+                valueInputOption="RAW",
+                body=body,
+            )
+            .execute()
+        )
+        click.echo(f"{result=}")
 
         return True
     except Exception as error:
-        print(f"Sheet Update Error: {error}")
+        print(f"An error occurred: {error}")
         return False
+
+
+# You might also want to add this helper function for general JSON serialization
+def serialize_for_json(obj):
+    """Convert common non-serializable types to serializable ones"""
+    if isinstance(obj, (datetime.date, datetime.datetime)):
+        return obj.isoformat()
+    if isinstance(obj, pd.Timestamp):
+        return obj.isoformat()
+    if pd.isna(obj):
+        return None
+    return str(obj)
+
+
+# And update the analyze_jobs_data function to use this serialization
+def analyze_jobs_data(df):
+    """Analyze jobs data and return insights DataFrame"""
+    analysis = {}
+
+    # Basic statistics
+    analysis["total_jobs"] = len(df)
+
+    # Company analysis
+    company_counts = df["company"].value_counts()
+    analysis["top_companies"] = {k: int(v) for k, v in company_counts.head(10).items()}
+
+    # Location analysis
+    location_counts = df["location"].value_counts()
+    analysis["top_locations"] = {k: int(v) for k, v in location_counts.head(5).items()}
+
+    # Job title analysis
+    title_counts = df["title"].value_counts()
+    analysis["top_titles"] = {k: int(v) for k, v in title_counts.head(10).items()}
+
+    # Date analysis
+    if "date_posted" in df.columns:
+        df["date_posted"] = pd.to_datetime(df["date_posted"])
+        posts_by_day = df.groupby(df["date_posted"].dt.date).size()
+        analysis["posts_by_day"] = {
+            serialize_for_json(k): int(v) for k, v in posts_by_day.items()
+        }
+
+    return pd.DataFrame([analysis])
 
 
 @click.command()
@@ -81,7 +152,10 @@ def update_sheet(service, spreadsheet_id, data_df):
     "--proxies",
     multiple=True,
     default=None,
-    help="Proxy addresses to use. Can be specified multiple times. E.g. --proxies '208.195.175.46:65095' --proxies '208.195.175.45:65095'",
+    help=(
+        "Proxy addresses to use. Can be specified multiple times. "
+        "E.g. --proxies '208.195.175.46:65095' --proxies '208.195.175.45:65095'"
+    ),
 )
 @click.option(
     "--batch-size", default=30, help="Number of results to fetch in each batch"
