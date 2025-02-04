@@ -1,7 +1,6 @@
 import click
 from jobspy import scrape_jobs
 import pandas as pd
-import os
 import time
 from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
@@ -106,7 +105,6 @@ def main(
     batch_size,
     sleep_time,
     max_retries,
-    output_dir,
 ):
     """Scrape jobs from various job sites with customizable parameters."""
     # Initialize Google Sheets service
