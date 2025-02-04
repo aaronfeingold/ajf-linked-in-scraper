@@ -17,6 +17,7 @@ python-jobspy = "^1.1.76"
 google-api-python-client = "^2.160.0"
 google-auth-httplib2 = "^0.2.0"
 google-auth-oauthlib = "^1.2.1"
+tenacity = "^9.0.0"
 
 
 [build-system]

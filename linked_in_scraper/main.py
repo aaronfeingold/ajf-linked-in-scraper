@@ -7,6 +7,7 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 import datetime
+from tenacity import retry, stop_after_attempt, wait_exponential
 
 
 def setup_google_sheets():
@@ -18,7 +19,7 @@ def setup_google_sheets():
         "ajf-live-re-wire-e162edab8ad3.json", scopes=SCOPES
     )
 
-    return build("sheets", "v4", credentials=creds)
+    return build("sheets", "v4", credentials=creds, retry=True)
 
 
 def create_new_sheet(service, title):
@@ -33,54 +34,22 @@ def create_new_sheet(service, title):
         return None
 
 
-def update_sheet(service, spreadsheet_id, data_df):
-    """Update Google Sheet with DataFrame content"""
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def create_analysis_sheet(service, spreadsheet_id):
+    """Create analysis sheet with retry logic"""
     try:
-        # Create a copy of the DataFrame to avoid modifying the original
-        df_copy = data_df.copy()
-
-        # Convert datetime columns to strings
-        for col in df_copy.select_dtypes(
-            include=["datetime64[ns]", "datetime64[ns, UTC]"]
-        ).columns:
-            df_copy[col] = df_copy[col].dt.strftime("%Y-%m-%d %H:%M:%S")
-
-        # Convert date columns to strings
-        for col in df_copy.select_dtypes(include=["date"]).columns:
-            df_copy[col] = df_copy[col].astype(str)
-
-        # Handle any other non-serializable types
-        for col in df_copy.columns:
-            # Convert any remaining objects to strings if they're not already
-            if df_copy[col].dtype == "object":
-                df_copy[col] = df_copy[col].fillna("").astype(str)
-
-        # Convert DataFrame to values list
-        values = [df_copy.columns.tolist()] + df_copy.values.tolist()
-
-        body = {"values": values}
-
-        # Update the sheet
-        result = (
-            service.spreadsheets()
-            .values()
-            .update(
-                spreadsheetId=spreadsheet_id,
-                range="A1",
-                valueInputOption="RAW",
-                body=body,
-            )
-            .execute()
-        )
-        click.echo(f"{result=}")
-
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id,
+            body={"requests": [{"addSheet": {"properties": {"title": "Analysis"}}}]},
+        ).execute()
+        # Add a small delay after sheet creation
+        time.sleep(2)
         return True
     except Exception as error:
-        print(f"An error occurred: {error}")
-        return False
+        print(f"Error creating analysis sheet: {error}")
+        raise
 
 
-# You might also want to add this helper function for general JSON serialization
 def serialize_for_json(obj):
     """Convert common non-serializable types to serializable ones"""
     if isinstance(obj, (datetime.date, datetime.datetime)):
@@ -152,10 +121,7 @@ def analyze_jobs_data(df):
     "--proxies",
     multiple=True,
     default=None,
-    help=(
-        "Proxy addresses to use. Can be specified multiple times. "
-        "E.g. --proxies '208.195.175.46:65095' --proxies '208.195.175.45:65095'"
-    ),
+    help="Proxy addresses to use. Can be specified multiple times. E.g. --proxies '208.195.175.46:65095' --proxies '208.195.175.45:65095'",
 )
 @click.option(
     "--batch-size", default=30, help="Number of results to fetch in each batch"
