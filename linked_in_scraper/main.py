@@ -3,6 +3,54 @@ from jobspy import scrape_jobs
 import pandas as pd
 import os
 import time
+from google.oauth2.credentials import Credentials
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+import datetime
+
+
+def setup_google_sheets():
+    """Setup Google Sheets API connection"""
+    SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+
+    # Load credentials from service account file
+    creds = service_account.Credentials.from_service_account_file(
+        "ajf-live-re-wire-e162edab8ad3.json", scopes=SCOPES
+    )
+
+    return build("sheets", "v4", credentials=creds)
+
+
+def create_new_sheet(service, title):
+    """Create a new Google Sheet and return its ID"""
+    sheet_metadata = {"properties": {"title": title}}
+
+    try:
+        sheet = service.spreadsheets().create(body=sheet_metadata).execute()
+        return sheet["spreadsheetId"]
+    except HttpError as error:
+        print(f"An error occurred: {error}")
+        return None
+
+
+def update_sheet(service, spreadsheet_id, data_df):
+    """Update Google Sheet with DataFrame content"""
+    try:
+        # Convert DataFrame to values list
+        values = [data_df.columns.tolist()] + data_df.values.tolist()
+
+        body = {"values": values}
+
+        # Update the sheet
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id, range="A1", valueInputOption="RAW", body=body
+        ).execute()
+
+        return True
+    except HttpError as error:
+        print(f"An error occurred: {error}")
+        return False
 
 
 @click.command()
@@ -61,15 +109,16 @@ def main(
     output_dir,
 ):
     """Scrape jobs from various job sites with customizable parameters."""
+    # Initialize Google Sheets service
+    service = setup_google_sheets()
 
-    # Create output directory
-    os.makedirs(output_dir, exist_ok=True)
+    # Create new spreadsheet
+    sheet_title = f"Job Search - {search_term} - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    spreadsheet_id = create_new_sheet(service, sheet_title)
 
-    # Generate unique filename
-    counter = 0
-    while os.path.exists(f"{output_dir}/jobs_{counter}.csv"):
-        counter += 1
-    csv_filename = f"{output_dir}/jobs_{counter}.csv"
+    if not spreadsheet_id:
+        click.echo("Failed to create Google Sheet. Exiting.")
+        return
 
     offset = 0
     all_jobs = []
@@ -116,8 +165,11 @@ def main(
                     break
 
     jobs_df = pd.DataFrame(all_jobs)
-    jobs_df.to_csv(csv_filename, index=False)
-    click.echo(f"Successfully saved {len(all_jobs)} jobs to {csv_filename}")
+    success = update_sheet(service, spreadsheet_id, jobs_df)
+
+    if success:
+        click.echo(f"Successfully saved {len(all_jobs)} jobs to Google Sheets")
+        click.echo(f"Spreadsheet ID: {spreadsheet_id}")
 
 
 if __name__ == '__main__':
