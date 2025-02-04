@@ -47,8 +47,8 @@ def update_sheet(service, spreadsheet_id, data_df):
         ).execute()
 
         return True
-    except HttpError as error:
-        print(f"An error occurred: {error}")
+    except Exception as error:
+        print(f"Sheet Update Error: {error}")
         return False
 
 
