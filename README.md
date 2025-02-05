@@ -1,4 +1,4 @@
-# Job Parser
+# AJF-Linked-In-Scraper
 
 - Goal: Scrape LinkedIn to cut narrow down searches, and automate sending resumes
 - Prototype: CLI to produce CSV exported to GoogleSheets
@@ -12,14 +12,21 @@
 - Click
 - Poetry
 - Pandas
+- GCP
 
 ## Development
 
 - This project uses [Poetry](https://python-poetry.org/docs/basic-usage/). See link for more details.
+  - FYI: on `poetry install` if the dependency downloading process hangs up in 'pending' for a while, [try these solutions](https://stackoverflow.com/questions/74960707/poetry-stuck-in-infinite-install-update)
 
 ## Usage
 
-- This CLI has quite a few options:
+- example:
+```sh
+poetry run linked-in-scraper --search-term "software engineer" --location "New York City" --site "linkedin" --country "USA" --batch-size 50 --sleep-time 20
+```
+
+- That being said, this CLI has quite a few options:
 
 ```
 --search-term: Job search query (required)
@@ -34,3 +41,7 @@
 --sleep-time: Base sleep time between batches (default: 100)
 --output-dir: Directory for CSV files (default: data)
 ```
+
+## GCP Notes
+- Sheets and Drive APIs need to be enable. Visit [this link](https://developers.google.com/workspace/guides/enable-apis) to do so
+- Create a new service account and download the json file for authentication and role based permissions.
