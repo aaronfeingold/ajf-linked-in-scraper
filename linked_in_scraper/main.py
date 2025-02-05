@@ -5,48 +5,87 @@ import time
 from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from googleapiclient.errors import HttpError
 import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
 
+GOOGLE_SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive.file",
+]
 
-def setup_google_sheets():
-    """Setup Google Sheets API connection"""
-    SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
-    # Load credentials from service account file
-    creds = service_account.Credentials.from_service_account_file(
-        "ajf-live-re-wire-e162edab8ad3.json", scopes=SCOPES
+def setup_google_creds():
+    return service_account.Credentials.from_service_account_file(
+        "ajf-live-re-wire-e162edab8ad3.json", scopes=GOOGLE_SCOPES
     )
 
-    return build("sheets", "v4", credentials=creds, retry=True)
+
+def setup_google_drive(creds):
+    """Setup Google Sheets API connection"""
+
+    return build("drive", "v3", credentials=creds)
 
 
-def create_new_sheet(service, title):
-    """Create a new Google Sheet and return its ID"""
-    sheet_metadata = {"properties": {"title": title}}
+def setup_google_sheets(creds):
+    """Setup Google Sheets API connection"""
 
-    try:
-        sheet = service.spreadsheets().create(body=sheet_metadata).execute()
-        return sheet["spreadsheetId"]
-    except HttpError as error:
-        print(f"An error occurred: {error}")
-        return None
+    return build("sheets", "v4", credentials=creds)
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def create_analysis_sheet(service, spreadsheet_id):
-    """Create analysis sheet with retry logic"""
+def create_new_sheet(sheets_service, drive_service, title):
+    """Create a new Google Sheet, give it permissions, use retry if needed"""
+
+    sheet_metadata = {"properties": {"title": title}}
     try:
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id,
-            body={"requests": [{"addSheet": {"properties": {"title": "Analysis"}}}]},
+        sheet = sheets_service.spreadsheets().create(body=sheet_metadata).execute()
+        spreadsheet_id = sheet["spreadsheetId"]
+
+        drive_service.permissions().create(
+            fileId=spreadsheet_id,
+            body={
+                "type": "user",
+                "role": "writer",
+                "emailAddress": "ajfeingold88@gmail.com",
+            },
         ).execute()
-        # Add a small delay after sheet creation
+
+        return spreadsheet_id
+    except Exception as error:
+        print(f"Error creating sheet: {error}")
+        raise
+
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def update_sheet(service, spreadsheet_id, data_df):
+    """Update Google Sheet with DataFrame content with retry logic"""
+
+    try:
+        # Create a copy of the DataFrame
+        df_copy = data_df.copy()
+
+        # Convert all columns to strings to ensure serializability
+        for column in df_copy.columns:
+            df_copy[column] = df_copy[column].astype(str)
+
+        # Convert DataFrame to values list
+        values = [df_copy.columns.tolist()] + df_copy.values.tolist()
+
+        body = {"values": values}
+
+        # Update the sheet
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range="A1",
+            valueInputOption="RAW",
+            body=body,
+        ).execute()
+
+        # Add a small delay after successful update
         time.sleep(2)
         return True
     except Exception as error:
-        print(f"Error creating analysis sheet: {error}")
+        print(f"Error updating sheet: {error}")
         raise
 
 
@@ -147,11 +186,14 @@ def main(
 ):
     """Scrape jobs from various job sites with customizable parameters."""
     # Initialize Google Sheets service
-    service = setup_google_sheets()
+    creds = setup_google_creds()
+    # TODO: refactor into loop if we are really repeating
+    sheets_service = setup_google_sheets(creds)
+    drive_service = setup_google_drive(creds)
 
     # Create new spreadsheet
     sheet_title = f"Job Search - {search_term} - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
-    spreadsheet_id = create_new_sheet(service, sheet_title)
+    spreadsheet_id = create_new_sheet(sheets_service, drive_service, sheet_title)
 
     if not spreadsheet_id:
         click.echo("Failed to create Google Sheet. Exiting.")
@@ -202,7 +244,7 @@ def main(
                     break
 
     jobs_df = pd.DataFrame(all_jobs)
-    success = update_sheet(service, spreadsheet_id, jobs_df)
+    success = update_sheet(sheets_service, spreadsheet_id, jobs_df)
 
     if success:
         click.echo(f"Successfully saved {len(all_jobs)} jobs to Google Sheets")

@@ -12,6 +12,7 @@
 - Click
 - Poetry
 - Pandas
+- GCP
 
 ## Development
 
@@ -40,3 +41,7 @@ poetry run linked-in-scraper --search-term "software engineer" --location "New Y
 --sleep-time: Base sleep time between batches (default: 100)
 --output-dir: Directory for CSV files (default: data)
 ```
+
+## GCP Notes
+- Sheets and Drive APIs need to be enable. Visit [this link](https://developers.google.com/workspace/guides/enable-apis) to do so
+- Create a new service account and download the json file for authentication and role based permissions.
