@@ -4,7 +4,7 @@ import pandas as pd
 import time
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-import datetime
+from datetime import datetime, timedelta
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 GOOGLE_SCOPES = [
@@ -90,7 +90,7 @@ def update_sheet(service, spreadsheet_id, data_df):
 
 def serialize_for_json(obj):
     """Convert common non-serializable types to serializable ones"""
-    if isinstance(obj, (datetime.date, datetime.datetime)):
+    if isinstance(obj, (datetime.date, datetime)):
         return obj.isoformat()
     if isinstance(obj, pd.Timestamp):
         return obj.isoformat()
@@ -234,6 +234,16 @@ def create_analytics(df):
 
 def update_analytics_sheet(service, spreadsheet_id, analytics):
     """Update the analytics sheet with visualizations"""
+    # Get the sheet ID for the "Analytics" sheet
+    sheets_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
+    sheet_id = None
+    for sheet in sheets_metadata.get("sheets", []):
+        if sheet.get("properties", {}).get("title") == "Analytics":
+            sheet_id = sheet.get("properties", {}).get("sheetId")
+            break
+
+    if sheet_id is None:
+        raise ValueError("Analytics sheet not found")
     for chart in analytics:
         # Update data
         range_name = f'Analytics!{chart["range"]}'
@@ -318,6 +328,39 @@ def update_analytics_sheet(service, spreadsheet_id, analytics):
         ).execute()
 
 
+def prepare_jobs_data(new_jobs_df, existing_jobs_df=None):
+    """Prepare and deduplicate jobs data"""
+
+    # Add applied column if it doesn't exist
+    if "applied" not in new_jobs_df.columns:
+        new_jobs_df["applied"] = False
+
+    # If we have existing jobs, merge them
+    if existing_jobs_df is not None:
+        # Create a unique identifier for each job (company + title + location)
+        new_jobs_df["job_id"] = new_jobs_df.apply(
+            lambda x: f"{x['company']}_{x['title']}_{x['location']}".lower().replace(
+                " ", "_"
+            ),
+            axis=1,
+        )
+        existing_jobs_df["job_id"] = existing_jobs_df.apply(
+            lambda x: f"{x['company']}_{x['title']}_{x['location']}".lower().replace(
+                " ", "_"
+            ),
+            axis=1,
+        )
+
+        # Keep all new jobs and existing jobs that were applied to
+        merged_df = pd.concat(
+            [new_jobs_df, existing_jobs_df[existing_jobs_df["applied"] == True]]
+        ).drop_duplicates(subset=["job_id"], keep="first")
+
+        return merged_df.drop("job_id", axis=1)
+
+    return new_jobs_df
+
+
 @click.command()
 @click.option("--search-term", required=True, help="Job search query")
 @click.option("--location", required=True, help="Job location")
@@ -379,7 +422,9 @@ def main(
     drive_service = setup_google_drive(creds)
 
     # Create new spreadsheet
-    sheet_title = f"Job Search - {search_term} - {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    sheet_title = (
+        f"Job Search - {search_term} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+    )
     spreadsheet_id = create_new_sheet(sheets_service, drive_service, sheet_title)
 
     if not spreadsheet_id:
@@ -432,9 +477,11 @@ def main(
                     click.echo("Max retries reached. Exiting.", err=True)
                     break
 
-    jobs_df = pd.DataFrame(all_jobs)
-    update_sheet(sheets_service, spreadsheet_id, jobs_df)
-    analytics = create_analytics(jobs_df)
+    new_jobs_df = pd.DataFrame(all_jobs)
+
+    final_jobs_df = prepare_jobs_data(new_jobs_df)
+    update_sheet(sheets_service, spreadsheet_id, final_jobs_df)
+    analytics = create_analytics(final_jobs_df)
     success = update_analytics_sheet(sheets_service, spreadsheet_id, analytics)
     if success:
         click.echo(f"Successfully saved {len(all_jobs)} jobs to Google Sheets")
