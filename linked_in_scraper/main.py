@@ -2,7 +2,6 @@ import click
 from jobspy import scrape_jobs
 import pandas as pd
 import time
-from google.oauth2.credentials import Credentials
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 import datetime
@@ -131,6 +130,56 @@ def analyze_jobs_data(df):
     return pd.DataFrame([analysis])
 
 
+def format_sheet(service, spreadsheet_id):
+    """Format the Google Sheet with proper row heights and additional columns"""
+
+    requests = [
+        {
+            "updateDimensionProperties": {
+                "range": {
+                    "dimension": "ROWS",
+                    "startIndex": 0,
+                    "endIndex": 1000,  # Adjust based on expected maximum rows
+                },
+                "properties": {"pixelSize": 21},
+                "fields": "pixelSize",
+            }
+        },
+        {
+            "addSheet": {
+                "properties": {
+                    "title": "Analytics",
+                    "gridProperties": {"rowCount": 1000, "columnCount": 26},
+                }
+            }
+        },
+    ]
+
+    # Add conditional formatting for the Applied column
+    requests.append(
+        {
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [{"sheetId": 0}],
+                    "booleanRule": {
+                        "condition": {
+                            "type": "TEXT_EQ",
+                            "values": [{"userEnteredValue": "TRUE"}],
+                        },
+                        "format": {
+                            "backgroundColor": {"red": 0.7, "green": 0.9, "blue": 0.7}
+                        },
+                    },
+                }
+            }
+        }
+    )
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body={"requests": requests}
+    ).execute()
+
+
 @click.command()
 @click.option("--search-term", required=True, help="Job search query")
 @click.option("--location", required=True, help="Job location")
@@ -198,6 +247,8 @@ def main(
     if not spreadsheet_id:
         click.echo("Failed to create Google Sheet. Exiting.")
         return
+
+    format_sheet(sheets_service, spreadsheet_id)
 
     offset = 0
     all_jobs = []
