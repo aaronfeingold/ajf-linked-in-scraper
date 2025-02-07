@@ -180,6 +180,144 @@ def format_sheet(service, spreadsheet_id):
     ).execute()
 
 
+def create_analytics(df):
+    """Create analytics visualizations in Google Sheets"""
+    analytics = []
+
+    # Company distribution
+    company_dist = df["company"].value_counts().head(10)
+    analytics.append(
+        {
+            "title": "Top 10 Companies Hiring",
+            "data": company_dist.reset_index().values.tolist(),
+            "type": "COLUMN",
+            "range": "A1:B11",
+        }
+    )
+
+    # Location distribution
+    location_dist = df["location"].value_counts().head(10)
+    analytics.append(
+        {
+            "title": "Top 10 Locations",
+            "data": location_dist.reset_index().values.tolist(),
+            "type": "PIE",
+            "range": "D1:E11",
+        }
+    )
+
+    # Application status
+    application_status = df["applied"].value_counts()
+    analytics.append(
+        {
+            "title": "Application Status",
+            "data": application_status.reset_index().values.tolist(),
+            "type": "PIE",
+            "range": "G1:H3",
+        }
+    )
+
+    # Time series of job postings
+    df["date_posted"] = pd.to_datetime(df["date_posted"])
+    posts_by_day = df.groupby(df["date_posted"].dt.date).size()
+    analytics.append(
+        {
+            "title": "Jobs Posted Over Time",
+            "data": [[str(k), v] for k, v in posts_by_day.items()],
+            "type": "LINE",
+            "range": "J1:K" + str(len(posts_by_day) + 1),
+        }
+    )
+
+    return analytics
+
+
+def update_analytics_sheet(service, spreadsheet_id, analytics):
+    """Update the analytics sheet with visualizations"""
+    for chart in analytics:
+        # Update data
+        range_name = f'Analytics!{chart["range"]}'
+        values = [[chart["title"]]] + chart["data"]
+
+        body = {"values": values}
+
+        service.spreadsheets().values().update(
+            spreadsheetId=spreadsheet_id,
+            range=range_name,
+            valueInputOption="RAW",
+            body=body,
+        ).execute()
+
+        # Add chart
+        requests = [
+            {
+                "addChart": {
+                    "chart": {
+                        "spec": {
+                            "title": chart["title"],
+                            "basicChart": {
+                                "chartType": chart["type"],
+                                "domains": [
+                                    {
+                                        "domain": {
+                                            "sourceRange": {
+                                                "sources": [
+                                                    {
+                                                        "sheetId": 1,  # Analytics sheet
+                                                        "startRowIndex": 1,
+                                                        "endRowIndex": len(
+                                                            chart["data"]
+                                                        )
+                                                        + 1,
+                                                        "startColumnIndex": 0,
+                                                        "endColumnIndex": 1,
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    }
+                                ],
+                                "series": [
+                                    {
+                                        "series": {
+                                            "sourceRange": {
+                                                "sources": [
+                                                    {
+                                                        "sheetId": 1,
+                                                        "startRowIndex": 1,
+                                                        "endRowIndex": len(
+                                                            chart["data"]
+                                                        )
+                                                        + 1,
+                                                        "startColumnIndex": 1,
+                                                        "endColumnIndex": 2,
+                                                    }
+                                                ]
+                                            }
+                                        }
+                                    }
+                                ],
+                            },
+                        },
+                        "position": {
+                            "overlayPosition": {
+                                "anchorCell": {
+                                    "sheetId": 1,
+                                    "rowIndex": 0,
+                                    "columnIndex": 0,
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+        ]
+
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id, body={"requests": requests}
+        ).execute()
+
+
 @click.command()
 @click.option("--search-term", required=True, help="Job search query")
 @click.option("--location", required=True, help="Job location")
@@ -295,8 +433,9 @@ def main(
                     break
 
     jobs_df = pd.DataFrame(all_jobs)
-    success = update_sheet(sheets_service, spreadsheet_id, jobs_df)
-
+    update_sheet(sheets_service, spreadsheet_id, jobs_df)
+    analytics = create_analytics(jobs_df)
+    success = update_analytics_sheet(sheets_service, spreadsheet_id, analytics)
     if success:
         click.echo(f"Successfully saved {len(all_jobs)} jobs to Google Sheets")
         click.echo(f"Spreadsheet ID: {spreadsheet_id}")
