@@ -244,6 +244,7 @@ def update_analytics_sheet(service, spreadsheet_id, analytics):
 
     if sheet_id is None:
         raise ValueError("Analytics sheet not found")
+
     for chart in analytics:
         # Update data
         range_name = f'Analytics!{chart["range"]}'
@@ -259,70 +260,122 @@ def update_analytics_sheet(service, spreadsheet_id, analytics):
         ).execute()
 
         # Add chart
-        requests = [
-            {
-                "addChart": {
-                    "chart": {
-                        "spec": {
-                            "title": chart["title"],
-                            "basicChart": {
-                                "chartType": chart["type"],
-                                "domains": [
-                                    {
-                                        "domain": {
-                                            "sourceRange": {
-                                                "sources": [
-                                                    {
-                                                        "sheetId": 1,  # Analytics sheet
-                                                        "startRowIndex": 1,
-                                                        "endRowIndex": len(
-                                                            chart["data"]
-                                                        )
-                                                        + 1,
-                                                        "startColumnIndex": 0,
-                                                        "endColumnIndex": 1,
-                                                    }
-                                                ]
+        if chart["type"] != "PIE":
+            requests = [
+                {
+                    "addChart": {
+                        "chart": {
+                            "spec": {
+                                "title": chart["title"],
+                                "basicChart": {
+                                    "chartType": chart["type"],
+                                    "domains": [
+                                        {
+                                            "domain": {
+                                                "sourceRange": {
+                                                    "sources": [
+                                                        {
+                                                            "sheetId": sheet_id,  # Analytics sheet
+                                                            "startRowIndex": 1,
+                                                            "endRowIndex": len(
+                                                                chart["data"]
+                                                            )
+                                                            + 1,
+                                                            "startColumnIndex": 0,
+                                                            "endColumnIndex": 1,
+                                                        }
+                                                    ]
+                                                }
                                             }
                                         }
-                                    }
-                                ],
-                                "series": [
-                                    {
-                                        "series": {
-                                            "sourceRange": {
-                                                "sources": [
-                                                    {
-                                                        "sheetId": 1,
-                                                        "startRowIndex": 1,
-                                                        "endRowIndex": len(
-                                                            chart["data"]
-                                                        )
-                                                        + 1,
-                                                        "startColumnIndex": 1,
-                                                        "endColumnIndex": 2,
-                                                    }
-                                                ]
+                                    ],
+                                    "series": [
+                                        {
+                                            "series": {
+                                                "sourceRange": {
+                                                    "sources": [
+                                                        {
+                                                            "sheetId": sheet_id,
+                                                            "startRowIndex": 1,
+                                                            "endRowIndex": len(
+                                                                chart["data"]
+                                                            )
+                                                            + 1,
+                                                            "startColumnIndex": 1,
+                                                            "endColumnIndex": 2,
+                                                        }
+                                                    ]
+                                                }
                                             }
                                         }
-                                    }
-                                ],
+                                    ],
+                                },
                             },
-                        },
-                        "position": {
-                            "overlayPosition": {
-                                "anchorCell": {
-                                    "sheetId": 1,
-                                    "rowIndex": 0,
-                                    "columnIndex": 0,
+                            "position": {
+                                "overlayPosition": {
+                                    "anchorCell": {
+                                        "sheetId": sheet_id,
+                                        "rowIndex": 0,
+                                        "columnIndex": 0,
+                                    }
                                 }
-                            }
-                        },
+                            },
+                        }
                     }
                 }
-            }
-        ]
-
+            ]
+        else:
+            requests = [
+                {
+                    "addChart": {
+                        "chart": {
+                            "spec": {
+                                "title": chart["title"],
+                                "pieChart": {
+                                    "legendPosition": "RIGHT_LEGEND",
+                                    "domain": {
+                                        "sourceRange": {
+                                            "sources": [
+                                                {
+                                                    "sheetId": sheet_id,
+                                                    "startRowIndex": 1,
+                                                    "endRowIndex": len(chart["data"])
+                                                    + 1,
+                                                    "startColumnIndex": 0,
+                                                    "endColumnIndex": 1,
+                                                }
+                                            ]
+                                        }
+                                    },
+                                    "series": {
+                                        "sourceRange": {
+                                            "sources": [
+                                                {
+                                                    "sheetId": sheet_id,
+                                                    "startRowIndex": 1,
+                                                    "endRowIndex": len(chart["data"])
+                                                    + 1,
+                                                    "startColumnIndex": 1,
+                                                    "endColumnIndex": 2,
+                                                }
+                                            ]
+                                        }
+                                    },
+                                },
+                            },
+                            "position": {
+                                "overlayPosition": {
+                                    "anchorCell": {
+                                        "sheetId": sheet_id,
+                                        "rowIndex": 0,
+                                        "columnIndex": 0,
+                                    }
+                                }
+                            },
+                        }
+                    }
+                }
+            ]
         service.spreadsheets().batchUpdate(
             spreadsheetId=spreadsheet_id, body={"requests": requests}
         ).execute()
