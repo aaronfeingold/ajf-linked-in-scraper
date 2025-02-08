@@ -1,5 +1,5 @@
 import string
-from typing import List
+from typing import List, Any
 from dataclasses import dataclass
 import click
 from jobspy import scrape_jobs
@@ -7,7 +7,7 @@ import pandas as pd
 import time
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from datetime import datetime
+from datetime import datetime, date
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 GOOGLE_SCOPES = [
@@ -94,37 +94,6 @@ def serialize_for_json(obj):
     if pd.isna(obj):
         return None
     return str(obj)
-
-
-# And update the analyze_jobs_data function to use this serialization
-def analyze_jobs_data(df):
-    """Analyze jobs data and return insights DataFrame"""
-    analysis = {}
-
-    # Basic statistics
-    analysis["total_jobs"] = len(df)
-
-    # Company analysis
-    company_counts = df["company"].value_counts()
-    analysis["top_companies"] = {k: int(v) for k, v in company_counts.head(10).items()}
-
-    # Location analysis
-    location_counts = df["location"].value_counts()
-    analysis["top_locations"] = {k: int(v) for k, v in location_counts.head(5).items()}
-
-    # Job title analysis
-    title_counts = df["title"].value_counts()
-    analysis["top_titles"] = {k: int(v) for k, v in title_counts.head(10).items()}
-
-    # Date analysis
-    if "date_posted" in df.columns:
-        df["date_posted"] = pd.to_datetime(df["date_posted"])
-        posts_by_day = df.groupby(df["date_posted"].dt.date).size()
-        analysis["posts_by_day"] = {
-            serialize_for_json(k): int(v) for k, v in posts_by_day.items()
-        }
-
-    return pd.DataFrame([analysis])
 
 
 def format_sheet(service, spreadsheet_id):
@@ -215,6 +184,30 @@ class ChartPosition:
         return f"{start_col}{start_row}:{end_col}{end_row}"
 
 
+def serialize_data(data: pd.Series) -> List[List[Any]]:
+    """
+    Convert pandas Series data to JSON-serializable format
+
+    Args:
+        data: Pandas Series containing the data
+
+    Returns:
+        List[List[Any]]: Serialized data in format [[index1, value1], [index2, value2], ...]
+    """
+    result = []
+
+    for idx, value in data.items():
+        # Convert date objects to string format
+        if isinstance(idx, (pd.Timestamp, date)):
+            idx = idx.strftime("%Y-%m-%d")
+        if isinstance(value, (pd.Timestamp, date)):
+            value = value.strftime("%Y-%m-%d")
+
+        result.append([str(idx), float(value)])
+
+    return result
+
+
 def create_chart_data(
     data: pd.Series,
     chart_type: str,
@@ -223,7 +216,7 @@ def create_chart_data(
     chart_index: int,
 ) -> dict:
     """
-    Create a standardized chart configuration
+    Create a standardized chart configuration with serialized data
 
     Args:
         data: Pandas Series containing the data
@@ -233,21 +226,15 @@ def create_chart_data(
         chart_index: Index of the chart in the sequence
 
     Returns:
-        dict: Chart configuration
+        dict: Chart configuration with JSON-serializable data
     """
-    if isinstance(data.index[0], (pd.Timestamp, pd.DatetimeIndex)):
-        # Handle time series data
-        data_list = [[str(k), v] for k, v in data.items()]
-    else:
-        data_list = data.reset_index().values.tolist()
+    data_list = serialize_data(data)
 
     return {
         "title": title,
         "data": data_list,
         "type": chart_type,
-        "range": position.get_range(
-            chart_index, len(data_list) + 1
-        ),  # +1 for title row
+        "range": position.get_range(chart_index, len(data_list) + 1),
     }
 
 
@@ -471,7 +458,7 @@ def prepare_jobs_data(new_jobs_df, existing_jobs_df=None):
 
         # Keep all new jobs and existing jobs that were applied to
         merged_df = pd.concat(
-            [new_jobs_df, existing_jobs_df[existing_jobs_df["applied"] == True]]
+            [new_jobs_df, existing_jobs_df[existing_jobs_df["applied"] is True]]
         ).drop_duplicates(subset=["job_id"], keep="first")
 
         return merged_df.drop("job_id", axis=1)
