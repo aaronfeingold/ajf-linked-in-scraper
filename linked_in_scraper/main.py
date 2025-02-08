@@ -270,7 +270,7 @@ def create_analytics(df: pd.DataFrame) -> List[dict]:
         },
         {
             "data": df.groupby(pd.to_datetime(df["date_posted"]).dt.date).size(),
-            "type": "LINE",
+            "type": "BAR",
             "title": "Jobs Posted Over Time",
         },
     ]
@@ -290,20 +290,188 @@ def create_analytics(df: pd.DataFrame) -> List[dict]:
     return analytics
 
 
-def update_analytics_sheet(service, spreadsheet_id, analytics):
+def get_chart_grid_position(index: int, columns_per_row: int = 2) -> tuple:
     """
-    Update the analytics sheet with visualizations
+    Calculate grid position for a chart based on its index
+    Returns (start_column, start_row) tuple
+    """
+    row = index // columns_per_row
+    column = index % columns_per_row
+    # Each chart takes 10 columns width and 20 rows height
+    start_column = column * 10
+    start_row = row * 20
+    return (start_column, start_row)
 
-    Args:
-        service: Google Sheets API service instance
-        spreadsheet_id: ID of the target spreadsheet
-        analytics: List of chart configurations
+
+def get_data_range(chart_index: int) -> tuple:
     """
+    Calculate the range where chart data should be placed
+    Returns (start_column, start_row) for data placement
+    """
+    # Place data in columns after the charts
+    # Starting from column 25 (Y) to avoid overlap with charts
+    base_column = 25
+    # Each dataset gets 3 columns width
+    start_column = base_column + (chart_index * 3)
+    # Start from row 1 to leave space for headers
+    start_row = 1
+    return (start_column, start_row)
+
+
+def update_chart_data(service, spreadsheet_id, sheet_id, chart):
+    """Update the data range for a chart with proper positioning"""
+    chart_index = int(chart.get("index", 0))
+    data_col, data_row = get_data_range(chart_index)
+
+    # Convert column number to letter
+    start_col = string.ascii_uppercase[data_col]
+    end_col = string.ascii_uppercase[data_col + 1]  # Next column for values
+
+    # Calculate range
+    end_row = len(chart["data"]) + data_row  # +1 for header
+    range_name = f"Analytics!{start_col}{data_row}:{end_col}{end_row}"
+
+    # Update chart's range property for later use
+    chart["data_range"] = {
+        "start_col": data_col,
+        "end_col": data_col + 1,
+        "start_row": data_row,
+        "end_row": end_row - 1,
+    }
+
+    # Prepare values with header
+    values = [[chart["title"]]] + chart["data"]
+    body = {"values": values}
+
+    service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=range_name,
+        valueInputOption="RAW",
+        body=body,
+    ).execute()
+
+
+def create_chart_spec(chart, sheet_id):
+    """Create chart specification with proper configuration for each chart type"""
+    data_range = chart["data_range"]
+
+    domain_range = {
+        "sourceRange": {
+            "sources": [
+                {
+                    "sheetId": sheet_id,
+                    "startRowIndex": data_range["start_row"],
+                    "endRowIndex": data_range["end_row"],
+                    "startColumnIndex": data_range["start_col"],
+                    "endColumnIndex": data_range["start_col"] + 1,
+                }
+            ]
+        }
+    }
+
+    series_range = {
+        "sourceRange": {
+            "sources": [
+                {
+                    "sheetId": sheet_id,
+                    "startRowIndex": data_range["start_row"],
+                    "endRowIndex": data_range["end_row"],
+                    "startColumnIndex": data_range["start_col"] + 1,
+                    "endColumnIndex": data_range["start_col"] + 2,
+                }
+            ]
+        }
+    }
+
+    grid_col, grid_row = get_chart_grid_position(int(chart.get("index", 0)))
+
+    if chart["type"] == "PIE":
+        spec = {
+            "title": chart["title"],
+            "pieChart": {
+                "legendPosition": "RIGHT_LEGEND",
+                "domain": domain_range,
+                "series": series_range,
+            },
+        }
+    elif chart["type"] == "BAR":  # Special handling for horizontal bar chart
+        spec = {
+            "title": chart["title"],
+            "basicChart": {
+                "chartType": "BAR",
+                "legendPosition": "NONE",
+                "domains": [{"domain": domain_range}],
+                "series": [{"series": series_range}],
+                "headerCount": 1,
+                "axis": [
+                    {"position": "LEFT", "title": "Date"},  # Y-axis (categories)
+                    {  # X-axis (values)
+                        "position": "BOTTOM",
+                        "title": "Number of Jobs",
+                    },
+                ],
+                "baselineRule": {"type": "MINIMUM", "value": 0},
+            },
+        }
+    else:  # Regular column chart
+        spec = {
+            "title": chart["title"],
+            "basicChart": {
+                "chartType": "COLUMN",
+                "legendPosition": "NONE",
+                "domains": [{"domain": domain_range}],
+                "series": [{"series": series_range}],
+                "headerCount": 1,
+                "axis": [
+                    {"position": "BOTTOM", "title": ""},
+                    {"position": "LEFT", "title": "Number of Jobs"},
+                ],
+                "baselineRule": {"type": "MINIMUM", "value": 0},
+            },
+        }
+
+    return {
+        "spec": spec,
+        "position": {
+            "overlayPosition": {
+                "anchorCell": {
+                    "sheetId": sheet_id,
+                    "rowIndex": grid_row,
+                    "columnIndex": grid_col,
+                }
+            }
+        },
+    }
+
+
+def update_analytics_sheet(service, spreadsheet_id, analytics):
+    """Update analytics sheet with proper data placement and chart positioning"""
     sheet_id = get_analytics_sheet_id(service, spreadsheet_id)
 
-    for chart in analytics:
+    # First, clear the analytics sheet
+    range_name = "Analytics!A1:ZZ1000"
+    service.spreadsheets().values().clear(
+        spreadsheetId=spreadsheet_id, range=range_name
+    ).execute()
+
+    # Update data and create charts
+    chart_requests = []
+    for index, chart in enumerate(analytics):
+        # Add index to chart for positioning
+        chart["index"] = index
+
+        # Update data in sheet
         update_chart_data(service, spreadsheet_id, sheet_id, chart)
-        add_chart_visualization(service, spreadsheet_id, sheet_id, chart)
+
+        # Create chart request
+        chart_spec = create_chart_spec(chart, sheet_id)
+        chart_requests.append({"addChart": {"chart": chart_spec}})
+
+    # Execute all chart creation requests at once
+    if chart_requests:
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=spreadsheet_id, body={"requests": chart_requests}
+        ).execute()
 
 
 def get_analytics_sheet_id(service, spreadsheet_id):
@@ -316,26 +484,6 @@ def get_analytics_sheet_id(service, spreadsheet_id):
             return properties.get("sheetId")
 
     raise ValueError("Analytics sheet not found")
-
-
-def update_chart_data(service, spreadsheet_id, sheet_id, chart):
-    """Update the data range for a chart"""
-    start_cell = chart["range"].split(":")[0]
-    end_row = len(chart["data"]) + 1  # +1 for the title row
-    end_column = string.ascii_uppercase.index(chart["range"].split(":")[1][0]) + 1
-    range_name = (
-        f"Analytics!{start_cell}:{string.ascii_uppercase[end_column-1]}{end_row}"
-    )
-
-    values = [[chart["title"]]] + chart["data"]
-    body = {"values": values}
-
-    service.spreadsheets().values().update(
-        spreadsheetId=spreadsheet_id,
-        range=range_name,
-        valueInputOption="RAW",
-        body=body,
-    ).execute()
 
 
 def get_source_range(sheet_id, start_row, end_row, start_col, end_col):
