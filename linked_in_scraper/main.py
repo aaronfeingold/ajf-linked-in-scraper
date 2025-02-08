@@ -1,11 +1,13 @@
 import string
+from typing import List
+from dataclasses import dataclass
 import click
 from jobspy import scrape_jobs
 import pandas as pd
 import time
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
-from datetime import datetime, timedelta
+from datetime import datetime
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 GOOGLE_SCOPES = [
@@ -20,16 +22,10 @@ def setup_google_creds():
     )
 
 
-def setup_google_drive(creds):
+def google_service(name, version, creds):
     """Setup Google Sheets API connection"""
 
-    return build("drive", "v3", credentials=creds)
-
-
-def setup_google_sheets(creds):
-    """Setup Google Sheets API connection"""
-
-    return build("sheets", "v4", credentials=creds)
+    return build(name, version, credentials=creds)
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
@@ -181,226 +177,273 @@ def format_sheet(service, spreadsheet_id):
     ).execute()
 
 
-def create_analytics(df):
-    """Create analytics visualizations in Google Sheets"""
+@dataclass
+class ChartPosition:
+    """Manages chart positioning in Google Sheets"""
+
+    start_col: str = "A"
+    charts_per_row: int = 3
+    col_width: int = 3  # Number of columns each chart takes
+    row_height: int = 15  # Number of rows each chart typically needs
+
+    def get_range(self, chart_index: int, data_length: int) -> str:
+        """
+        Calculate the range for a chart based on its index and data length
+
+        Args:
+            chart_index: The index of the chart (0-based)
+            data_length: Number of data rows for the chart
+
+        Returns:
+            str: Range in A1 notation (e.g., 'A1:B11')
+        """
+        # Calculate position
+        col_position = chart_index % self.charts_per_row
+        row_position = chart_index // self.charts_per_row
+
+        # Calculate starting column letter
+        start_col_index = col_position * self.col_width
+        start_col = chr(ord(self.start_col) + start_col_index)
+
+        # Calculate ending column letter
+        end_col = chr(ord(start_col) + 1)  # Assuming we need 2 columns for data
+
+        # Calculate row numbers
+        start_row = row_position * self.row_height + 1
+        end_row = start_row + data_length
+
+        return f"{start_col}{start_row}:{end_col}{end_row}"
+
+
+def create_chart_data(
+    data: pd.Series,
+    chart_type: str,
+    title: str,
+    position: ChartPosition,
+    chart_index: int,
+) -> dict:
+    """
+    Create a standardized chart configuration
+
+    Args:
+        data: Pandas Series containing the data
+        chart_type: Type of chart (e.g., 'PIE', 'COLUMN', 'LINE')
+        title: Chart title
+        position: ChartPosition instance for range calculation
+        chart_index: Index of the chart in the sequence
+
+    Returns:
+        dict: Chart configuration
+    """
+    if isinstance(data.index[0], (pd.Timestamp, pd.DatetimeIndex)):
+        # Handle time series data
+        data_list = [[str(k), v] for k, v in data.items()]
+    else:
+        data_list = data.reset_index().values.tolist()
+
+    return {
+        "title": title,
+        "data": data_list,
+        "type": chart_type,
+        "range": position.get_range(
+            chart_index, len(data_list) + 1
+        ),  # +1 for title row
+    }
+
+
+def create_analytics(df: pd.DataFrame) -> List[dict]:
+    """
+    Create analytics visualizations in Google Sheets
+
+    Args:
+        df: DataFrame containing the job posting data
+
+    Returns:
+        List[dict]: List of chart configurations
+    """
+    position = ChartPosition()
     analytics = []
 
-    # Company distribution
-    company_dist = df["company"].value_counts().head(10)
-    analytics.append(
+    # Define chart configurations
+    chart_configs = [
         {
-            "title": "Top 10 Companies Hiring",
-            "data": company_dist.reset_index().values.tolist(),
+            "data": df["company"].value_counts().head(10),
             "type": "COLUMN",
-            "range": "A1:B11",
-        }
-    )
-
-    # Location distribution
-    location_dist = df["location"].value_counts().head(10)
-    analytics.append(
+            "title": "Top 10 Companies Hiring",
+        },
         {
+            "data": df["location"].value_counts().head(10),
+            "type": "PIE",
             "title": "Top 10 Locations",
-            "data": location_dist.reset_index().values.tolist(),
-            "type": "PIE",
-            "range": "D1:E11",
-        }
-    )
-
-    # Application status
-    application_status = df["applied"].value_counts()
-    analytics.append(
+        },
         {
+            "data": df["applied"].value_counts(),
+            "type": "PIE",
             "title": "Application Status",
-            "data": application_status.reset_index().values.tolist(),
-            "type": "PIE",
-            "range": "G1:H3",
-        }
-    )
-
-    # Time series of job postings
-    df["date_posted"] = pd.to_datetime(df["date_posted"])
-    posts_by_day = df.groupby(df["date_posted"].dt.date).size()
-    analytics.append(
+        },
         {
-            "title": "Jobs Posted Over Time",
-            "data": [[str(k), v] for k, v in posts_by_day.items()],
+            "data": df.groupby(pd.to_datetime(df["date_posted"]).dt.date).size(),
             "type": "LINE",
-            "range": "J1:K" + str(len(posts_by_day) + 1),
-        }
-    )
+            "title": "Jobs Posted Over Time",
+        },
+    ]
+
+    # Create charts
+    for index, config in enumerate(chart_configs):
+        analytics.append(
+            create_chart_data(
+                data=config["data"],
+                chart_type=config["type"],
+                title=config["title"],
+                position=position,
+                chart_index=index,
+            )
+        )
 
     return analytics
 
 
 def update_analytics_sheet(service, spreadsheet_id, analytics):
-    """Update the analytics sheet with visualizations"""
-    # Get the sheet ID for the "Analytics" sheet
-    sheets_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
-    sheet_id = None
-    for sheet in sheets_metadata.get("sheets", []):
-        if sheet.get("properties", {}).get("title") == "Analytics":
-            sheet_id = sheet.get("properties", {}).get("sheetId")
-            break
+    """
+    Update the analytics sheet with visualizations
 
-    if sheet_id is None:
-        raise ValueError("Analytics sheet not found")
+    Args:
+        service: Google Sheets API service instance
+        spreadsheet_id: ID of the target spreadsheet
+        analytics: List of chart configurations
+    """
+    sheet_id = get_analytics_sheet_id(service, spreadsheet_id)
 
     for chart in analytics:
-        # Update data
-        start_cell = chart["range"].split(":")[0]
-        end_row = len(chart["data"]) + 1  # +1 for the title row
-        end_column = string.ascii_uppercase.index(chart["range"].split(":")[1][0]) + 1
-        range_name = (
-            f"Analytics!{start_cell}:{string.ascii_uppercase[end_column-1]}{end_row}"
-        )
-        values = [[chart["title"]]] + chart["data"]
+        update_chart_data(service, spreadsheet_id, sheet_id, chart)
+        add_chart_visualization(service, spreadsheet_id, sheet_id, chart)
 
-        body = {"values": values}
 
-        service.spreadsheets().values().update(
-            spreadsheetId=spreadsheet_id,
-            range=range_name,
-            valueInputOption="RAW",
-            body=body,
-        ).execute()
+def get_analytics_sheet_id(service, spreadsheet_id):
+    """Get the sheet ID for the Analytics sheet"""
+    sheets_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
 
-        # Add chart
-        if chart["type"] != "PIE":
-            requests = [
-                {
-                    "addChart": {
-                        "chart": {
-                            "spec": {
-                                "title": chart["title"],
-                                "basicChart": {
-                                    "chartType": chart["type"],
-                                    "domains": [
-                                        {
-                                            "domain": {
-                                                "sourceRange": {
-                                                    "sources": [
-                                                        {
-                                                            "sheetId": sheet_id,  # Analytics sheet
-                                                            "startRowIndex": 1,
-                                                            "endRowIndex": len(
-                                                                chart["data"]
-                                                            )
-                                                            + 1,
-                                                            "startColumnIndex": string.ascii_uppercase.index(
-                                                                chart["range"].split(
-                                                                    ":"
-                                                                )[0][0]
-                                                            ),
-                                                            "endColumnIndex": string.ascii_uppercase.index(
-                                                                chart["range"].split(
-                                                                    ":"
-                                                                )[1][0]
-                                                            ),
-                                                        }
-                                                    ]
-                                                }
-                                            }
-                                        }
-                                    ],
-                                    "series": [
-                                        {
-                                            "series": {
-                                                "sourceRange": {
-                                                    "sources": [
-                                                        {
-                                                            "sheetId": sheet_id,
-                                                            "startRowIndex": 1,
-                                                            "endRowIndex": len(
-                                                                chart["data"]
-                                                            )
-                                                            + 1,
-                                                            "startColumnIndex": string.ascii_uppercase.index(
-                                                                chart["range"].split(
-                                                                    ":"
-                                                                )[0][0]
-                                                            ),
-                                                            "endColumnIndex": string.ascii_uppercase.index(
-                                                                chart["range"].split(
-                                                                    ":"
-                                                                )[1][0]
-                                                            ),
-                                                        }
-                                                    ]
-                                                }
-                                            }
-                                        }
-                                    ],
-                                },
-                            },
-                            "position": {
-                                "overlayPosition": {
-                                    "anchorCell": {
-                                        "sheetId": sheet_id,
-                                        "rowIndex": 0,
-                                        "columnIndex": 0,
-                                    }
-                                }
-                            },
-                        }
-                    }
-                }
-            ]
-        else:
-            requests = [
-                {
-                    "addChart": {
-                        "chart": {
-                            "spec": {
-                                "title": chart["title"],
-                                "pieChart": {
-                                    "legendPosition": "RIGHT_LEGEND",
-                                    "domain": {
-                                        "sourceRange": {
-                                            "sources": [
-                                                {
-                                                    "sheetId": sheet_id,
-                                                    "startRowIndex": 1,
-                                                    "endRowIndex": len(chart["data"])
-                                                    + 1,
-                                                    "startColumnIndex": 0,
-                                                    "endColumnIndex": 1,
-                                                }
-                                            ]
-                                        }
-                                    },
-                                    "series": {
-                                        "sourceRange": {
-                                            "sources": [
-                                                {
-                                                    "sheetId": sheet_id,
-                                                    "startRowIndex": 1,
-                                                    "endRowIndex": len(chart["data"])
-                                                    + 1,
-                                                    "startColumnIndex": 1,
-                                                    "endColumnIndex": 2,
-                                                }
-                                            ]
-                                        }
-                                    },
-                                },
-                            },
-                            "position": {
-                                "overlayPosition": {
-                                    "anchorCell": {
-                                        "sheetId": sheet_id,
-                                        "rowIndex": 0,
-                                        "columnIndex": 0,
-                                    }
-                                }
-                            },
-                        }
-                    }
-                }
-            ]
-        service.spreadsheets().batchUpdate(
-            spreadsheetId=spreadsheet_id, body={"requests": requests}
-        ).execute()
+    for sheet in sheets_metadata.get("sheets", []):
+        properties = sheet.get("properties", {})
+        if properties.get("title") == "Analytics":
+            return properties.get("sheetId")
+
+    raise ValueError("Analytics sheet not found")
+
+
+def update_chart_data(service, spreadsheet_id, sheet_id, chart):
+    """Update the data range for a chart"""
+    start_cell = chart["range"].split(":")[0]
+    end_row = len(chart["data"]) + 1  # +1 for the title row
+    end_column = string.ascii_uppercase.index(chart["range"].split(":")[1][0]) + 1
+    range_name = (
+        f"Analytics!{start_cell}:{string.ascii_uppercase[end_column-1]}{end_row}"
+    )
+
+    values = [[chart["title"]]] + chart["data"]
+    body = {"values": values}
+
+    service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range=range_name,
+        valueInputOption="RAW",
+        body=body,
+    ).execute()
+
+
+def get_source_range(sheet_id, start_row, end_row, start_col, end_col):
+    """Create a source range configuration"""
+    return {
+        "sources": [
+            {
+                "sheetId": sheet_id,
+                "startRowIndex": start_row,
+                "endRowIndex": end_row,
+                "startColumnIndex": start_col,
+                "endColumnIndex": end_col,
+            }
+        ]
+    }
+
+
+def get_chart_position(sheet_id):
+    """Create a chart position configuration"""
+    return {
+        "overlayPosition": {
+            "anchorCell": {
+                "sheetId": sheet_id,
+                "rowIndex": 0,
+                "columnIndex": 0,
+            }
+        }
+    }
+
+
+def create_basic_chart_spec(chart, sheet_id):
+    """Create a specification for basic charts (non-pie)"""
+    col_indices = [
+        string.ascii_uppercase.index(x[0]) for x in chart["range"].split(":")
+    ]
+
+    domain_range = get_source_range(
+        sheet_id=sheet_id,
+        start_row=1,
+        end_row=len(chart["data"]) + 1,
+        start_col=col_indices[0],
+        end_col=col_indices[1],
+    )
+
+    return {
+        "title": chart["title"],
+        "basicChart": {
+            "chartType": chart["type"],
+            "domains": [{"domain": {"sourceRange": domain_range}}],
+            "series": [{"series": {"sourceRange": domain_range}}],
+        },
+    }
+
+
+def create_pie_chart_spec(chart, sheet_id):
+    """Create a specification for pie charts"""
+    data_length = len(chart["data"]) + 1
+
+    domain_range = get_source_range(
+        sheet_id=sheet_id, start_row=1, end_row=data_length, start_col=0, end_col=1
+    )
+
+    series_range = get_source_range(
+        sheet_id=sheet_id, start_row=1, end_row=data_length, start_col=1, end_col=2
+    )
+
+    return {
+        "title": chart["title"],
+        "pieChart": {
+            "legendPosition": "RIGHT_LEGEND",
+            "domain": {"sourceRange": domain_range},
+            "series": {"sourceRange": series_range},
+        },
+    }
+
+
+def add_chart_visualization(service, spreadsheet_id, sheet_id, chart):
+    """Add a chart visualization to the sheet"""
+    chart_spec = (
+        create_pie_chart_spec(chart, sheet_id)
+        if chart["type"] == "PIE"
+        else create_basic_chart_spec(chart, sheet_id)
+    )
+
+    requests = [
+        {
+            "addChart": {
+                "chart": {"spec": chart_spec, "position": get_chart_position(sheet_id)}
+            }
+        }
+    ]
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body={"requests": requests}
+    ).execute()
 
 
 def prepare_jobs_data(new_jobs_df, existing_jobs_df=None):
@@ -493,9 +536,8 @@ def main(
     # Initialize Google Sheets service
     creds = setup_google_creds()
     # TODO: refactor into loop if we are really repeating
-    sheets_service = setup_google_sheets(creds)
-    drive_service = setup_google_drive(creds)
-
+    sheets_service = google_service("sheets", "v4", creds)
+    drive_service = google_service("drive", "v3", creds)
     # Create new spreadsheet
     sheet_title = (
         f"Job Search - {search_term} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
