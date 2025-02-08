@@ -318,14 +318,24 @@ def get_data_range(chart_index: int) -> tuple:
     return (start_column, start_row)
 
 
+def get_column_letter(n):
+    """Convert column number to letter (e.g., 0='A', 25='Z', 26='AA')"""
+    string = ""
+    while n >= 0:
+        n, remainder = divmod(n, 26)
+        string = chr(65 + remainder) + string
+        n -= 1
+    return string
+
+
 def update_chart_data(service, spreadsheet_id, sheet_id, chart):
     """Update the data range for a chart with proper positioning"""
     chart_index = int(chart.get("index", 0))
     data_col, data_row = get_data_range(chart_index)
 
-    # Convert column number to letter
-    start_col = string.ascii_uppercase[data_col]
-    end_col = string.ascii_uppercase[data_col + 1]  # Next column for values
+    # Calculate range using proper column conversion
+    start_col = get_column_letter(data_col)
+    end_col = get_column_letter(data_col + 1)
 
     # Calculate range
     end_row = len(chart["data"]) + data_row  # +1 for header
