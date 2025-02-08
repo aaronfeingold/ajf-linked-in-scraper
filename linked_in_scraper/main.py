@@ -1,3 +1,4 @@
+import string
 import click
 from jobspy import scrape_jobs
 import pandas as pd
@@ -247,7 +248,12 @@ def update_analytics_sheet(service, spreadsheet_id, analytics):
 
     for chart in analytics:
         # Update data
-        range_name = f'Analytics!{chart["range"]}'
+        start_cell = chart["range"].split(":")[0]
+        end_row = len(chart["data"]) + 1  # +1 for the title row
+        end_column = string.ascii_uppercase.index(chart["range"].split(":")[1][0]) + 1
+        range_name = (
+            f"Analytics!{start_cell}:{string.ascii_uppercase[end_column-1]}{end_row}"
+        )
         values = [[chart["title"]]] + chart["data"]
 
         body = {"values": values}
@@ -281,8 +287,16 @@ def update_analytics_sheet(service, spreadsheet_id, analytics):
                                                                 chart["data"]
                                                             )
                                                             + 1,
-                                                            "startColumnIndex": 0,
-                                                            "endColumnIndex": 1,
+                                                            "startColumnIndex": string.ascii_uppercase.index(
+                                                                chart["range"].split(
+                                                                    ":"
+                                                                )[0][0]
+                                                            ),
+                                                            "endColumnIndex": string.ascii_uppercase.index(
+                                                                chart["range"].split(
+                                                                    ":"
+                                                                )[1][0]
+                                                            ),
                                                         }
                                                     ]
                                                 }
@@ -301,8 +315,16 @@ def update_analytics_sheet(service, spreadsheet_id, analytics):
                                                                 chart["data"]
                                                             )
                                                             + 1,
-                                                            "startColumnIndex": 1,
-                                                            "endColumnIndex": 2,
+                                                            "startColumnIndex": string.ascii_uppercase.index(
+                                                                chart["range"].split(
+                                                                    ":"
+                                                                )[0][0]
+                                                            ),
+                                                            "endColumnIndex": string.ascii_uppercase.index(
+                                                                chart["range"].split(
+                                                                    ":"
+                                                                )[1][0]
+                                                            ),
                                                         }
                                                     ]
                                                 }
