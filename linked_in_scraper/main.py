@@ -389,12 +389,12 @@ def create_chart_spec(chart, sheet_id):
         spec = {
             "title": chart["title"],
             "pieChart": {
-                "legendPosition": "RIGHT_LEGEND",  # Changed from RIGHT to RIGHT_LEGEND
+                "legendPosition": "RIGHT_LEGEND",
                 "domain": {"sourceRange": {"sources": [range_source]}},
                 "series": {"sourceRange": {"sources": [series_source]}},
             },
         }
-    elif chart["type"] == "BAR":
+    elif chart["type"] == "BAR":  # Horizontal bar chart
         spec = {
             "title": chart["title"],
             "basicChart": {
@@ -404,13 +404,19 @@ def create_chart_spec(chart, sheet_id):
                 "series": [
                     {
                         "series": {"sourceRange": {"sources": [series_source]}},
-                        "targetAxis": "LEFT_AXIS",
+                        "targetAxis": "BOTTOM_AXIS",  # Changed from LEFT_AXIS to BOTTOM_AXIS
                     }
                 ],
                 "headerCount": 1,
                 "axis": [
-                    {"position": "BOTTOM_AXIS", "title": "Date"},
-                    {"position": "LEFT_AXIS", "title": "Number of Jobs"},
+                    {
+                        "position": "LEFT_AXIS",  # Categories (dates) on the left
+                        "title": "Date",
+                    },
+                    {
+                        "position": "BOTTOM_AXIS",  # Values on the bottom
+                        "title": "Number of Jobs",
+                    },
                 ],
             },
         }
