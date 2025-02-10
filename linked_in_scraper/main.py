@@ -365,32 +365,22 @@ def create_chart_spec(chart, sheet_id):
     """Create chart specification with proper configuration for each chart type"""
     data_range = chart["data_range"]
 
-    domain_range = {
-        "sourceRange": {
-            "sources": [
-                {
-                    "sheetId": sheet_id,
-                    "startRowIndex": data_range["start_row"],
-                    "endRowIndex": data_range["end_row"],
-                    "startColumnIndex": data_range["start_col"],
-                    "endColumnIndex": data_range["start_col"] + 1,
-                }
-            ]
-        }
+    # Create basic range source structure
+    range_source = {
+        "sheetId": sheet_id,
+        "startRowIndex": data_range["start_row"],
+        "endRowIndex": data_range["end_row"],
+        "startColumnIndex": data_range["start_col"],
+        "endColumnIndex": data_range["start_col"] + 1,
     }
 
-    series_range = {
-        "sourceRange": {
-            "sources": [
-                {
-                    "sheetId": sheet_id,
-                    "startRowIndex": data_range["start_row"],
-                    "endRowIndex": data_range["end_row"],
-                    "startColumnIndex": data_range["start_col"] + 1,
-                    "endColumnIndex": data_range["start_col"] + 2,
-                }
-            ]
-        }
+    # Create series range source
+    series_source = {
+        "sheetId": sheet_id,
+        "startRowIndex": data_range["start_row"],
+        "endRowIndex": data_range["end_row"],
+        "startColumnIndex": data_range["start_col"] + 1,
+        "endColumnIndex": data_range["start_col"] + 2,
     }
 
     grid_col, grid_row = get_chart_grid_position(int(chart.get("index", 0)))
@@ -399,61 +389,48 @@ def create_chart_spec(chart, sheet_id):
         spec = {
             "title": chart["title"],
             "pieChart": {
-                "legendPosition": "RIGHT",
-                "domain": domain_range,
-                "series": series_range,
-                "pieProperties": {"sliceVisibility": "VISIBLE"},
+                "legendPosition": "RIGHT_LEGEND",  # Changed from RIGHT to RIGHT_LEGEND
+                "domain": {"sourceRange": {"sources": [range_source]}},
+                "series": {"sourceRange": {"sources": [series_source]}},
             },
         }
-    elif chart["type"] == "BAR":  # Special handling for horizontal bar chart
+    elif chart["type"] == "BAR":
         spec = {
             "title": chart["title"],
             "basicChart": {
                 "chartType": "BAR",
                 "legendPosition": "NO_LEGEND",
-                "domains": [domain_range],
-                "series": [{"series": series_range, "targetAxis": "LEFT_AXIS"}],
+                "domains": [{"domain": {"sourceRange": {"sources": [range_source]}}}],
+                "series": [
+                    {
+                        "series": {"sourceRange": {"sources": [series_source]}},
+                        "targetAxis": "LEFT_AXIS",
+                    }
+                ],
                 "headerCount": 1,
                 "axis": [
-                    {
-                        "position": "BOTTOM_AXIS",
-                        "title": "Date",
-                        "viewWindowOptions": {"viewWindowMode": "PRETTY"},
-                    },
-                    {
-                        "position": "LEFT_AXIS",
-                        "title": "Number of Jobs",
-                        "viewWindowOptions": {
-                            "viewWindowMode": "PRETTY",
-                            "viewWindowMin": 0,
-                        },
-                    },
+                    {"position": "BOTTOM_AXIS", "title": "Date"},
+                    {"position": "LEFT_AXIS", "title": "Number of Jobs"},
                 ],
             },
         }
-    else:  # Regular column chart
+    else:  # COLUMN chart
         spec = {
             "title": chart["title"],
             "basicChart": {
                 "chartType": "COLUMN",
                 "legendPosition": "NO_LEGEND",
-                "domains": [domain_range],
-                "series": [{"series": series_range, "targetAxis": "LEFT_AXIS"}],
+                "domains": [{"domain": {"sourceRange": {"sources": [range_source]}}}],
+                "series": [
+                    {
+                        "series": {"sourceRange": {"sources": [series_source]}},
+                        "targetAxis": "LEFT_AXIS",
+                    }
+                ],
                 "headerCount": 1,
                 "axis": [
-                    {
-                        "position": "BOTTOM_AXIS",
-                        "title": "",
-                        "viewWindowOptions": {"viewWindowMode": "PRETTY"},
-                    },
-                    {
-                        "position": "LEFT_AXIS",
-                        "title": "Number of Jobs",
-                        "viewWindowOptions": {
-                            "viewWindowMode": "PRETTY",
-                            "viewWindowMin": 0,
-                        },
-                    },
+                    {"position": "BOTTOM_AXIS", "title": ""},
+                    {"position": "LEFT_AXIS", "title": "Number of Jobs"},
                 ],
             },
         }
