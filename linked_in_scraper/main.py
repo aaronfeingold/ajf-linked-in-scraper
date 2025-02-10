@@ -1,5 +1,5 @@
 import string
-from typing import List, Any
+from typing import List, Any, Dict
 from dataclasses import dataclass
 import time
 import json
@@ -59,7 +59,7 @@ class ResumeJobAnalyzer:
         """
 
         response = self.client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-4-turbo",
             messages=[
                 {
                     "role": "system",
@@ -89,19 +89,26 @@ class ResumeJobAnalyzer:
 
 def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -> None:
     """Update Google Sheet with analysis results and create a new Analysis tab"""
+    sheet_id = get_sheet_id(service, spreadsheet_id, "AI Analysis")
 
-    # Create new Analysis tab
+    # First, ensure the ai analysis sheet is clear
+    range_name = "AI Analysis!A1:ZZ1000"
+    service.spreadsheets().values().clear(
+        spreadsheetId=spreadsheet_id, range=range_name
+    ).execute()
+    # update the Analysis tab
     requests = [
         {
-            "addSheet": {
+            "updateSheetProperties": {
                 "properties": {
-                    "title": "Resume Analysis",
+                    "sheetId": sheet_id,
                     "gridProperties": {
                         "frozenRowCount": 1,
                         "rowCount": len(df) + 1,
                         "columnCount": 26,
                     },
-                }
+                },
+                "fields": "gridProperties.columnCount",
             }
         }
     ]
@@ -137,7 +144,7 @@ def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -
 
     service.spreadsheets().values().update(
         spreadsheetId=spreadsheet_id,
-        range="Resume Analysis!A1",
+        range="AI Analysis!A1",
         valueInputOption="RAW",
         body={"values": values},
     ).execute()
@@ -148,12 +155,28 @@ def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -
             "addConditionalFormatRule": {
                 "rule": {
                     "ranges": [
-                        {"sheetId": 1, "startColumnIndex": 3, "endColumnIndex": 4}
+                        {
+                            "sheetId": sheet_id,
+                            "startColumnIndex": 3,
+                            "endColumnIndex": 4,
+                        }
                     ],
                     "gradientRule": {
-                        "minpoint": {"color": {"red": 1, "green": 0.8, "blue": 0.8}},
-                        "midpoint": {"color": {"red": 1, "green": 1, "blue": 0.8}},
-                        "maxpoint": {"color": {"red": 0.8, "green": 1, "blue": 0.8}},
+                        "minpoint": {
+                            "color": {"red": 1, "green": 0.8, "blue": 0.8},
+                            "type": "NUMBER",
+                            "value": "0",
+                        },
+                        "midpoint": {
+                            "color": {"red": 1, "green": 1, "blue": 0.8},
+                            "type": "NUMBER",
+                            "value": "50",
+                        },
+                        "maxpoint": {
+                            "color": {"red": 0.8, "green": 1, "blue": 0.8},
+                            "type": "NUMBER",
+                            "value": "100",
+                        },
                     },
                 }
             }
@@ -266,7 +289,15 @@ def format_sheet(service, spreadsheet_id):
                     "title": "Analytics",
                     "gridProperties": {"rowCount": 1000, "columnCount": 26},
                 }
-            }
+            },
+        },
+        {
+            "addSheet": {
+                "properties": {
+                    "title": "AI Analysis",
+                    "gridProperties": {"rowCount": 1000, "columnCount": 26},
+                }
+            },
         },
     ]
 
@@ -606,7 +637,7 @@ def create_chart_spec(chart, sheet_id):
 
 def update_analytics_sheet(service, spreadsheet_id, analytics):
     """Update analytics sheet with proper data placement and chart positioning"""
-    sheet_id = get_analytics_sheet_id(service, spreadsheet_id)
+    sheet_id = get_sheet_id(service, spreadsheet_id, "Analytics")
 
     # Increase the maximum number of columns so we can put the data columns out of initial view
     requests = [
@@ -652,13 +683,14 @@ def update_analytics_sheet(service, spreadsheet_id, analytics):
         ).execute()
 
 
-def get_analytics_sheet_id(service, spreadsheet_id):
+def get_sheet_id(service, spreadsheet_id, title):
     """Get the sheet ID for the Analytics sheet"""
     sheets_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
 
     for sheet in sheets_metadata.get("sheets", []):
+        print(sheet["properties"]["title"], sheet["properties"]["sheetId"])
         properties = sheet.get("properties", {})
-        if properties.get("title") == "Analytics":
+        if properties.get("title") == title:
             return properties.get("sheetId")
 
     raise ValueError("Analytics sheet not found")
