@@ -13,6 +13,7 @@
 - Poetry
 - Pandas
 - GCP
+- OpenAI
 
 ## Development
 
@@ -40,8 +41,11 @@ poetry run linked-in-scraper --search-term "software engineer" --location "New Y
 --batch-size: Results per batch (default: 30)
 --sleep-time: Base sleep time between batches (default: 100)
 --output-dir: Directory for CSV files (default: data)
+--resume-path: The path to the resume you want analyzed
+--openai-api-key: API Key for making requests
 ```
 
-## GCP Notes
+## Dependency Notes
 - Sheets and Drive APIs need to be enable. Visit [this link](https://developers.google.com/workspace/guides/enable-apis) to do so
 - Create a new service account and download the json file for authentication and role based permissions.
+- If you want to use the OpenAI Resume feature to pair jobs that match your resume, get an [api key here](https://platform.openai.com/)
