@@ -1,10 +1,13 @@
 import string
-from typing import List, Any
+from typing import List, Any, Dict
 from dataclasses import dataclass
+import time
+import json
 import click
 from jobspy import scrape_jobs
 import pandas as pd
-import time
+import PyPDF2
+from openai import OpenAI
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from datetime import datetime, date
@@ -14,6 +17,175 @@ GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.file",
 ]
+
+
+class ResumeJobAnalyzer:
+    def __init__(self, openai_api_key: str):
+        """Initialize with OpenAI API key"""
+        self.client = OpenAI(api_key=openai_api_key)
+        self.resume_text = None
+
+    def load_resume(self, pdf_path: str) -> None:
+        """Load and extract text from resume PDF"""
+        with open(pdf_path, "rb") as file:
+            reader = PyPDF2.PdfReader(file)
+            self.resume_text = ""
+            for page in reader.pages:
+                self.resume_text += page.extract_text()
+
+    def analyze_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
+        """Analyze a single job against the loaded resume"""
+        if not self.resume_text:
+            raise ValueError("Resume not loaded. Call load_resume() first.")
+
+        prompt = f"""Analyze this job posting against the candidate's resume. Provide a JSON response with the following structure:
+        {{
+            "match_score": <0-100 score>,
+            "key_matches": [<list of matching skills/requirements>],
+            "missing_qualifications": [<list of missing requirements>],
+            "resume_suggestions": [<specific suggestions to improve resume for this role>],
+            "application_priority": <"High"/"Medium"/"Low">,
+            "reason": "<brief explanation of the match score and priority>"
+        }}
+
+        Resume:
+        {self.resume_text}
+
+        Job Details:
+        Title: {job['title']}
+        Company: {job['company']}
+        Description: {job['description']}
+        Location: {job['location']}
+        """
+
+        response = self.client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=[
+                {
+                    "role": "system",
+                    "content": "You are an expert resume analyzer and job matcher.",
+                },
+                {"role": "user", "content": prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        return json.loads(response.choices[0].message.content)
+
+    def batch_analyze_jobs(self, jobs_df: pd.DataFrame) -> pd.DataFrame:
+        """Analyze all jobs in the DataFrame against the resume"""
+        analyses = []
+
+        for _, job in jobs_df.iterrows():
+            try:
+                analysis = self.analyze_job(job.to_dict())
+                analyses.append({**job.to_dict(), **analysis})
+            except Exception as e:
+                print(f"Error analyzing job {job['title']}: {e}")
+                continue
+
+        return pd.DataFrame(analyses)
+
+
+def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -> None:
+    """Update Google Sheet with analysis results and create a new Analysis tab"""
+    sheet_id = get_sheet_id(service, spreadsheet_id, "AI Analysis")
+
+    # First, ensure the ai analysis sheet is clear
+    range_name = "AI Analysis!A1:ZZ1000"
+    service.spreadsheets().values().clear(
+        spreadsheetId=spreadsheet_id, range=range_name
+    ).execute()
+    # update the Analysis tab
+    requests = [
+        {
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": sheet_id,
+                    "gridProperties": {
+                        "frozenRowCount": 1,
+                        "rowCount": len(df) + 1,
+                        "columnCount": 26,
+                    },
+                },
+                "fields": "gridProperties.columnCount",
+            }
+        }
+    ]
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body={"requests": requests}
+    ).execute()
+
+    # Prepare data for the analysis tab
+    analysis_df = df[
+        [
+            "title",
+            "company",
+            "location",
+            "match_score",
+            "key_matches",
+            "missing_qualifications",
+            "resume_suggestions",
+            "application_priority",
+            "reason",
+            "job_url",
+        ]
+    ].sort_values("match_score", ascending=False)
+
+    # Convert lists to strings for sheet compatibility
+    for col in ["key_matches", "missing_qualifications", "resume_suggestions"]:
+        analysis_df[col] = analysis_df[col].apply(
+            lambda x: "\n".join(f"• {item}" for item in x)
+        )
+
+    # Update the sheet
+    values = [analysis_df.columns.tolist()] + analysis_df.values.tolist()
+
+    service.spreadsheets().values().update(
+        spreadsheetId=spreadsheet_id,
+        range="AI Analysis!A1",
+        valueInputOption="RAW",
+        body={"values": values},
+    ).execute()
+
+    # Add conditional formatting for match score and priority
+    requests = [
+        {
+            "addConditionalFormatRule": {
+                "rule": {
+                    "ranges": [
+                        {
+                            "sheetId": sheet_id,
+                            "startColumnIndex": 3,
+                            "endColumnIndex": 4,
+                        }
+                    ],
+                    "gradientRule": {
+                        "minpoint": {
+                            "color": {"red": 1, "green": 0.8, "blue": 0.8},
+                            "type": "NUMBER",
+                            "value": "0",
+                        },
+                        "midpoint": {
+                            "color": {"red": 1, "green": 1, "blue": 0.8},
+                            "type": "NUMBER",
+                            "value": "50",
+                        },
+                        "maxpoint": {
+                            "color": {"red": 0.8, "green": 1, "blue": 0.8},
+                            "type": "NUMBER",
+                            "value": "100",
+                        },
+                    },
+                }
+            }
+        }
+    ]
+
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body={"requests": requests}
+    ).execute()
 
 
 def setup_google_creds():
@@ -117,7 +289,15 @@ def format_sheet(service, spreadsheet_id):
                     "title": "Analytics",
                     "gridProperties": {"rowCount": 1000, "columnCount": 26},
                 }
-            }
+            },
+        },
+        {
+            "addSheet": {
+                "properties": {
+                    "title": "AI Analysis",
+                    "gridProperties": {"rowCount": 1000, "columnCount": 26},
+                }
+            },
         },
     ]
 
@@ -457,7 +637,7 @@ def create_chart_spec(chart, sheet_id):
 
 def update_analytics_sheet(service, spreadsheet_id, analytics):
     """Update analytics sheet with proper data placement and chart positioning"""
-    sheet_id = get_analytics_sheet_id(service, spreadsheet_id)
+    sheet_id = get_sheet_id(service, spreadsheet_id, "Analytics")
 
     # Increase the maximum number of columns so we can put the data columns out of initial view
     requests = [
@@ -503,13 +683,14 @@ def update_analytics_sheet(service, spreadsheet_id, analytics):
         ).execute()
 
 
-def get_analytics_sheet_id(service, spreadsheet_id):
+def get_sheet_id(service, spreadsheet_id, title):
     """Get the sheet ID for the Analytics sheet"""
     sheets_metadata = service.spreadsheets().get(spreadsheetId=spreadsheet_id).execute()
 
     for sheet in sheets_metadata.get("sheets", []):
+        print(sheet["properties"]["title"], sheet["properties"]["sheetId"])
         properties = sheet.get("properties", {})
-        if properties.get("title") == "Analytics":
+        if properties.get("title") == title:
             return properties.get("sheetId")
 
     raise ValueError("Analytics sheet not found")
@@ -681,6 +862,8 @@ def prepare_jobs_data(new_jobs_df, existing_jobs_df=None):
     "--sleep-time", default=100, help="Base sleep time between batches in seconds"
 )
 @click.option("--max-retries", default=3, help="Maximum retry attempts per batch")
+@click.option("--resume-path", type=str, help="Path to your resume PDF")
+@click.option("--openai-api-key", type=str, help="OpenAI API key")
 def main(
     search_term,
     location,
@@ -695,6 +878,8 @@ def main(
     batch_size,
     sleep_time,
     max_retries,
+    resume_path,
+    openai_api_key,
 ):
     """Scrape jobs from various job sites with customizable parameters."""
     # Initialize Google Sheets service
@@ -764,6 +949,14 @@ def main(
     update_sheet(sheets_service, spreadsheet_id, final_jobs_df)
     analytics = create_analytics(final_jobs_df)
     success = update_analytics_sheet(sheets_service, spreadsheet_id, analytics)
+
+    if resume_path and openai_api_key:
+        analyzer = ResumeJobAnalyzer(openai_api_key)
+        analyzer.load_resume(resume_path)
+        analyzed_df = analyzer.batch_analyze_jobs(final_jobs_df)
+        success = update_sheet_with_analysis(
+            sheets_service, spreadsheet_id, analyzed_df
+        )
     if success:
         click.echo(f"Successfully saved {len(all_jobs)} jobs to Google Sheets")
         click.echo(f"Spreadsheet ID: {spreadsheet_id}")
