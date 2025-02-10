@@ -399,9 +399,10 @@ def create_chart_spec(chart, sheet_id):
         spec = {
             "title": chart["title"],
             "pieChart": {
-                "legendPosition": "RIGHT_LEGEND",
+                "legendPosition": "RIGHT",
                 "domain": domain_range,
                 "series": series_range,
+                "pieProperties": {"sliceVisibility": "VISIBLE"},
             },
         }
     elif chart["type"] == "BAR":  # Special handling for horizontal bar chart
@@ -409,18 +410,25 @@ def create_chart_spec(chart, sheet_id):
             "title": chart["title"],
             "basicChart": {
                 "chartType": "BAR",
-                "legendPosition": "NONE",
-                "domains": [{"domain": domain_range}],
-                "series": [{"series": series_range}],
+                "legendPosition": "NO_LEGEND",
+                "domains": [domain_range],
+                "series": [{"series": series_range, "targetAxis": "LEFT_AXIS"}],
                 "headerCount": 1,
                 "axis": [
-                    {"position": "LEFT", "title": "Date"},  # Y-axis (categories)
-                    {  # X-axis (values)
-                        "position": "BOTTOM",
+                    {
+                        "position": "BOTTOM_AXIS",
+                        "title": "Date",
+                        "viewWindowOptions": {"viewWindowMode": "PRETTY"},
+                    },
+                    {
+                        "position": "LEFT_AXIS",
                         "title": "Number of Jobs",
+                        "viewWindowOptions": {
+                            "viewWindowMode": "PRETTY",
+                            "viewWindowMin": 0,
+                        },
                     },
                 ],
-                "baselineRule": {"type": "MINIMUM", "value": 0},
             },
         }
     else:  # Regular column chart
@@ -428,15 +436,25 @@ def create_chart_spec(chart, sheet_id):
             "title": chart["title"],
             "basicChart": {
                 "chartType": "COLUMN",
-                "legendPosition": "NONE",
-                "domains": [{"domain": domain_range}],
-                "series": [{"series": series_range}],
+                "legendPosition": "NO_LEGEND",
+                "domains": [domain_range],
+                "series": [{"series": series_range, "targetAxis": "LEFT_AXIS"}],
                 "headerCount": 1,
                 "axis": [
-                    {"position": "BOTTOM", "title": ""},
-                    {"position": "LEFT", "title": "Number of Jobs"},
+                    {
+                        "position": "BOTTOM_AXIS",
+                        "title": "",
+                        "viewWindowOptions": {"viewWindowMode": "PRETTY"},
+                    },
+                    {
+                        "position": "LEFT_AXIS",
+                        "title": "Number of Jobs",
+                        "viewWindowOptions": {
+                            "viewWindowMode": "PRETTY",
+                            "viewWindowMin": 0,
+                        },
+                    },
                 ],
-                "baselineRule": {"type": "MINIMUM", "value": 0},
             },
         }
 
