@@ -458,6 +458,24 @@ def update_analytics_sheet(service, spreadsheet_id, analytics):
     """Update analytics sheet with proper data placement and chart positioning"""
     sheet_id = get_analytics_sheet_id(service, spreadsheet_id)
 
+    # Increase the maximum number of columns so we can put the data columns out of initial view
+    requests = [
+        {
+            "updateSheetProperties": {
+                "properties": {
+                    "sheetId": sheet_id,
+                    "gridProperties": {
+                        "columnCount": 78  # Triple the alphabet length (26 * 3)
+                    },
+                },
+                "fields": "gridProperties.columnCount",
+            }
+        }
+    ]
+    # execute the update
+    service.spreadsheets().batchUpdate(
+        spreadsheetId=spreadsheet_id, body={"requests": requests}
+    ).execute()
     # First, clear the analytics sheet
     range_name = "Analytics!A1:ZZ1000"
     service.spreadsheets().values().clear(
