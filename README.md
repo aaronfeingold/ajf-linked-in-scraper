@@ -3,7 +3,6 @@
 - Goal: Scrape LinkedIn to cut narrow down searches, and automate sending resumes
 - Prototype: CLI to produce CSV exported to GoogleSheets
 - Next Steps: 
-  - Integrate OpenAI to answer application questions
   - Run Daily via systemd
 
 ## Tech Stack
