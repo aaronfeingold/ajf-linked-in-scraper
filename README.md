@@ -1,7 +1,7 @@
 # AJF-Linked-In-Scraper
 
 - Goal: Scrape LinkedIn to narrow down searches
-- Prototype: CLI to produce CSV exported to GoogleSheets
+- Prototype: CLI to push analysis to GoogleSheets
 - Next Steps: 
   - Run Daily via systemd
 
