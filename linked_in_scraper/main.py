@@ -517,15 +517,21 @@ def update_chart_data(service, spreadsheet_id, sheet_id, chart):
     start_col = get_column_letter(data_col)
     end_col = get_column_letter(data_col + 1)
 
-    # Calculate range
-    end_row = len(chart["data"]) + data_row  # +1 for header
-    range_name = f"Analytics!{start_col}{data_row}:{end_col}{end_row}"
+    # Calculate row numbers
+    start_row = data_row
+    end_row = start_row + len(chart["data"]) + 1  # +1 for header
+
+    # Ensure end_row is greater than start_row
+    if end_row <= start_row:
+        raise ValueError("endRowIndex must be greater than startRowIndex")
+
+    range_name = f"Analytics!{start_col}{start_row}:{end_col}{end_row}"
 
     # Update chart's range property for later use
     chart["data_range"] = {
         "start_col": data_col,
         "end_col": data_col + 1,
-        "start_row": data_row,
+        "start_row": start_row,
         "end_row": end_row - 1,
     }
 
