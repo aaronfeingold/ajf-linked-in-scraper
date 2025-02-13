@@ -72,19 +72,27 @@ class ResumeJobAnalyzer:
 
         return json.loads(response.choices[0].message.content)
 
-    def batch_analyze_jobs(self, jobs_df: pd.DataFrame) -> pd.DataFrame:
-        """Analyze all jobs in the DataFrame against the resume"""
-        analyses = []
 
-        for _, job in jobs_df.iterrows():
-            try:
-                analysis = self.analyze_job(job.to_dict())
-                analyses.append({**job.to_dict(), **analysis})
-            except Exception as e:
-                print(f"Error analyzing job {job['title']}: {e}")
-                continue
+def batch_analyze_jobs(self, jobs_df: pd.DataFrame) -> pd.DataFrame:
+    """Analyze all jobs in the DataFrame against the resume"""
+    analyses = []
 
-        return pd.DataFrame(analyses)
+    for _, job in jobs_df.iterrows():
+        try:
+            analysis = self.analyze_job(job.to_dict())
+            analyses.append({**job.to_dict(), **analysis})
+        except Exception as e:
+            error_message = str(e)
+            print(f"Error analyzing job {job['title']}: {error_message}")
+            if "exceeded your current quota" in error_message:
+                print("Quota exceeded. Stopping analysis.")
+                break
+
+    if not analyses:
+        print("No analyses were performed.")
+        return pd.DataFrame()
+
+    return pd.DataFrame(analyses)
 
 
 def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -> None:
