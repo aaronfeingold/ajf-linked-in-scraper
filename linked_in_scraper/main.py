@@ -968,9 +968,14 @@ def main(
         analyzer = ResumeJobAnalyzer(openai_api_key)
         analyzer.load_resume(resume_path)
         analyzed_df = analyzer.batch_analyze_jobs(final_jobs_df)
-        success = update_sheet_with_analysis(
-            sheets_service, spreadsheet_id, analyzed_df
-        )
+        if analyzed_df.empty:
+            click.echo(
+                "No analyses were performed. Skipping update_sheet_with_analysis."
+            )
+        else:
+            success = update_sheet_with_analysis(
+                sheets_service, spreadsheet_id, analyzed_df
+            )
     if success:
         click.echo(f"Successfully saved {len(all_jobs)} jobs to Google Sheets")
         click.echo(f"Spreadsheet ID: {spreadsheet_id}")
