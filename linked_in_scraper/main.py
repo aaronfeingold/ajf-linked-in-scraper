@@ -72,19 +72,27 @@ class ResumeJobAnalyzer:
 
         return json.loads(response.choices[0].message.content)
 
-    def batch_analyze_jobs(self, jobs_df: pd.DataFrame) -> pd.DataFrame:
-        """Analyze all jobs in the DataFrame against the resume"""
-        analyses = []
 
-        for _, job in jobs_df.iterrows():
-            try:
-                analysis = self.analyze_job(job.to_dict())
-                analyses.append({**job.to_dict(), **analysis})
-            except Exception as e:
-                print(f"Error analyzing job {job['title']}: {e}")
-                continue
+def batch_analyze_jobs(self, jobs_df: pd.DataFrame) -> pd.DataFrame:
+    """Analyze all jobs in the DataFrame against the resume"""
+    analyses = []
 
-        return pd.DataFrame(analyses)
+    for _, job in jobs_df.iterrows():
+        try:
+            analysis = self.analyze_job(job.to_dict())
+            analyses.append({**job.to_dict(), **analysis})
+        except Exception as e:
+            error_message = str(e)
+            print(f"Error analyzing job {job['title']}: {error_message}")
+            if "exceeded your current quota" in error_message:
+                print("Quota exceeded. Stopping analysis.")
+                break
+
+    if not analyses:
+        print("No analyses were performed.")
+        return pd.DataFrame()
+
+    return pd.DataFrame(analyses)
 
 
 def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -> None:
@@ -517,15 +525,21 @@ def update_chart_data(service, spreadsheet_id, sheet_id, chart):
     start_col = get_column_letter(data_col)
     end_col = get_column_letter(data_col + 1)
 
-    # Calculate range
-    end_row = len(chart["data"]) + data_row  # +1 for header
-    range_name = f"Analytics!{start_col}{data_row}:{end_col}{end_row}"
+    # Calculate row numbers
+    start_row = data_row
+    end_row = start_row + len(chart["data"]) + 1  # +1 for header
+
+    # Ensure end_row is greater than start_row
+    if end_row <= start_row:
+        raise ValueError("endRowIndex must be greater than startRowIndex")
+
+    range_name = f"Analytics!{start_col}{start_row}:{end_col}{end_row}"
 
     # Update chart's range property for later use
     chart["data_range"] = {
         "start_col": data_col,
         "end_col": data_col + 1,
-        "start_row": data_row,
+        "start_row": start_row,
         "end_row": end_row - 1,
     }
 
@@ -954,9 +968,14 @@ def main(
         analyzer = ResumeJobAnalyzer(openai_api_key)
         analyzer.load_resume(resume_path)
         analyzed_df = analyzer.batch_analyze_jobs(final_jobs_df)
-        success = update_sheet_with_analysis(
-            sheets_service, spreadsheet_id, analyzed_df
-        )
+        if analyzed_df.empty:
+            click.echo(
+                "No analyses were performed. Skipping update_sheet_with_analysis."
+            )
+        else:
+            success = update_sheet_with_analysis(
+                sheets_service, spreadsheet_id, analyzed_df
+            )
     if success:
         click.echo(f"Successfully saved {len(all_jobs)} jobs to Google Sheets")
         click.echo(f"Spreadsheet ID: {spreadsheet_id}")
