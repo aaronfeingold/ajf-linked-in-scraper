@@ -37,7 +37,7 @@ class ResumeJobAnalyzer:
             self.resume_text = ""
             for page in reader.pages:
                 self.resume_text += page.extract_text()
-            self.resume_tokens = self.estimate_tokens(self.resume_text)
+            self.resume_tokens = self.estimate_tokens(self.resume_text)  # estimate 1246
             print(f"{self.resume_tokens=}")
 
     def estimate_tokens(self, text, model=OPENAI_DEFAULT_MODEL):
@@ -99,8 +99,16 @@ class ResumeJobAnalyzer:
         if not self.resume_text:
             raise ValueError("Resume not loaded. Call load_resume() first.")
 
-        op = """Analyze the following job postings against the candidate's resume. Provide a JSON array
-        where each element corresponds to a job."""  # estimate 24 tokens
+        op = """Analyze this job posting against the candidate's resume.
+        Provide a JSON response with the following structure:
+        {{
+            "match_score": <0-100 score>,
+            "key_matches": [<list of matching skills/requirements>],
+            "missing_qualifications": [<list of missing requirements>],
+            "resume_suggestions": [<specific suggestions to improve resume for this role>],
+            "application_priority": <"High"/"Medium"/"Low">,
+            "reason": "<brief explanation of the match score and priority>"
+        }}"""  # estimate 115 tokens
         opt = self.estimate_tokens(op)
         sc = "You are an expert resume analyzer and job matcher."
         sct = self.estimate_tokens(sc)
@@ -129,7 +137,7 @@ class ResumeJobAnalyzer:
             if token_count + job_tokens > batch_max_tokens:
                 # Process the batch
                 batch_prompt = f"""
-                Analyze the following job postings against the candidate's resume. Provide a JSON array where each element corresponds to a job.
+                {op}
                 Resume:
                 {self.resume_text}
 
@@ -145,7 +153,7 @@ class ResumeJobAnalyzer:
                         },
                         {"role": "user", "content": batch_prompt},
                     ],
-                    response_format={"type": "json_array"},
+                    response_format={"type": "json_object"},
                 )
                 results.extend(json.loads(response.choices[0].message.content))
                 batch.clear()
@@ -159,13 +167,15 @@ class ResumeJobAnalyzer:
 
             # Stop if the total token count is about to exceed the input_max_tokens
             if aggregate_token_count > input_max_tokens:
-                print("Total token count exceeded the limit. Stopping analysis.")
+                print(
+                    "Total token count exceeded the limit. Not adding more to batch, running final batch next."
+                )
                 break
 
         # Process the final batch
         if batch:
             batch_prompt = f"""
-            Analyze the following job postings against the candidate's resume. Provide a JSON array where each element corresponds to a job.
+            {op}
             Resume:
             {self.resume_text}
 
@@ -175,7 +185,7 @@ class ResumeJobAnalyzer:
             response = self.client.chat.completions.create(
                 model=model,
                 messages=[{"role": "user", "content": batch_prompt}],
-                response_format={"type": "json_array"},
+                response_format={"type": "json_object"},
             )
             results.extend(json.loads(response.choices[0].message.content))
 
