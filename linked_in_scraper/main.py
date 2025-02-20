@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import time
 import json
 import click
+import tiktoken
 from jobspy import scrape_jobs
 import pandas as pd
 import PyPDF2
@@ -19,11 +20,15 @@ GOOGLE_SCOPES = [
 ]
 
 
+OPENAI_DEFAULT_MODEL = "gpt-4-turbo"
+
+
 class ResumeJobAnalyzer:
     def __init__(self, openai_api_key: str):
         """Initialize with OpenAI API key"""
         self.client = OpenAI(api_key=openai_api_key)
         self.resume_text = None
+        self.resume_tokens = None
 
     def load_resume(self, pdf_path: str) -> None:
         """Load and extract text from resume PDF"""
@@ -32,13 +37,23 @@ class ResumeJobAnalyzer:
             self.resume_text = ""
             for page in reader.pages:
                 self.resume_text += page.extract_text()
+            self.resume_tokens = self.estimate_tokens(self.resume_text)
+            print(f"{self.resume_tokens=}")
 
-    def analyze_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
+    def estimate_tokens(self, text, model=OPENAI_DEFAULT_MODEL):
+        # TODO: question if tiktoken can keep with the latest models
+        encoding = tiktoken.encoding_for_model(model)
+        # if you want to know the token count for a prompt
+        # you find the length of the list of tokens
+        return len(encoding.encode(text))
+
+    def analyze_job(
+        self, job: Dict[str, Any], model=OPENAI_DEFAULT_MODEL
+    ) -> Dict[str, Any]:
         """Analyze a single job against the loaded resume"""
-        if not self.resume_text:
-            raise ValueError("Resume not loaded. Call load_resume() first.")
 
-        prompt = f"""Analyze this job posting against the candidate's resume. Provide a JSON response with the following structure:
+        prompt = f"""Analyze this job posting against the candidate's resume.
+        Provide a JSON response with the following structure:
         {{
             "match_score": <0-100 score>,
             "key_matches": [<list of matching skills/requirements>],
@@ -59,7 +74,7 @@ class ResumeJobAnalyzer:
         """
 
         response = self.client.chat.completions.create(
-            model="gpt-4-turbo",
+            model=model,
             messages=[
                 {
                     "role": "system",
@@ -68,31 +83,107 @@ class ResumeJobAnalyzer:
                 {"role": "user", "content": prompt},
             ],
             response_format={"type": "json_object"},
+            max_tokens=500,
         )
 
         return json.loads(response.choices[0].message.content)
 
+    def batch_analyze_jobs(
+        self,
+        jobs_df: pd.DataFrame,
+        batch_max_tokens: int = 3800,
+        input_max_tokens: int = 100000,
+        model=OPENAI_DEFAULT_MODEL,
+    ) -> pd.DataFrame:
+        """Analyze all jobs in the DataFrame against the resume"""
+        if not self.resume_text:
+            raise ValueError("Resume not loaded. Call load_resume() first.")
 
-def batch_analyze_jobs(self, jobs_df: pd.DataFrame) -> pd.DataFrame:
-    """Analyze all jobs in the DataFrame against the resume"""
-    analyses = []
+        op = """Analyze the following job postings against the candidate's resume. Provide a JSON array
+        where each element corresponds to a job."""  # estimate 24 tokens
+        opt = self.estimate_tokens(op)
+        sc = "You are an expert resume analyzer and job matcher."
+        sct = self.estimate_tokens(sc)
+        print(f"{opt=}, {sct=}")
+        results = []
+        batch = []
+        init_token_in = (
+            self.resume_tokens + opt + sct + 15
+        )  # buffer for the words Resume, Job, etc, really about 2 each
+        print(f"{init_token_in=}")
+        token_count = init_token_in
+        aggregate_token_count = init_token_in
 
-    for _, job in jobs_df.iterrows():
-        try:
-            analysis = self.analyze_job(job.to_dict())
-            analyses.append({**job.to_dict(), **analysis})
-        except Exception as e:
-            error_message = str(e)
-            print(f"Error analyzing job {job['title']}: {error_message}")
-            if "exceeded your current quota" in error_message:
-                print("Quota exceeded. Stopping analysis.")
+        for _, job in jobs_df.iterrows():
+            jd = job.to_dict()
+            job_text = f"""
+            Title: {jd['title']}
+            Company: {jd['company']}
+            Description: {jd['description']}
+            Location: {jd['location']}
+            """
+
+            job_tokens = self.estimate_tokens(job_text)
+
+            # If adding this job exceeds max tokens, process the current batch
+            if token_count + job_tokens > batch_max_tokens:
+                # Process the batch
+                batch_prompt = f"""
+                Analyze the following job postings against the candidate's resume. Provide a JSON array where each element corresponds to a job.
+                Resume:
+                {self.resume_text}
+
+                Jobs:
+                {''.join(batch)}
+                """
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=[
+                        {
+                            "role": "system",
+                            "content": f"{sc}",
+                        },
+                        {"role": "user", "content": batch_prompt},
+                    ],
+                    response_format={"type": "json_array"},
+                )
+                results.extend(json.loads(response.choices[0].message.content))
+                batch.clear()
+                # Reset token count
+                token_count = init_token_in
+
+            # Add job to batch
+            batch.append(job_text)
+            token_count += job_tokens
+            aggregate_token_count += job_tokens
+
+            # Stop if the total token count is about to exceed the input_max_tokens
+            if aggregate_token_count > input_max_tokens:
+                print("Total token count exceeded the limit. Stopping analysis.")
                 break
 
-    if not analyses:
-        print("No analyses were performed.")
-        return pd.DataFrame()
+        # Process the final batch
+        if batch:
+            batch_prompt = f"""
+            Analyze the following job postings against the candidate's resume. Provide a JSON array where each element corresponds to a job.
+            Resume:
+            {self.resume_text}
 
-    return pd.DataFrame(analyses)
+            Jobs:
+            {''.join(batch)}
+            """
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": batch_prompt}],
+                response_format={"type": "json_array"},
+            )
+            results.extend(json.loads(response.choices[0].message.content))
+
+        if not results:
+            print("No analyses were performed.")
+            return pd.DataFrame()
+
+        return pd.DataFrame(results)
 
 
 def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -> None:
@@ -968,6 +1059,7 @@ def main(
         analyzer = ResumeJobAnalyzer(openai_api_key)
         analyzer.load_resume(resume_path)
         analyzed_df = analyzer.batch_analyze_jobs(final_jobs_df)
+        print(analyzed_df)
         if analyzed_df.empty:
             click.echo(
                 "No analyses were performed. Skipping update_sheet_with_analysis."
