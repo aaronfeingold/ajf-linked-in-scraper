@@ -57,12 +57,16 @@ class ResumeJobAnalyzer:
         """Analyze all jobs in the DataFrame against the resume"""
         if not self.resume_text:
             raise ValueError("Resume not loaded. Call load_resume() first.")
-
+        sc = "You are an expert resume analyzer and job matcher."
         op = """Analyze each job posting in the Jobs List against the candidate's resume.
         Provide an array an array called "results" where each element is a JSON object with the following structure:
         {
             "results": [
                 {{
+                    "title": <title>,
+                    "company": <company>,
+                    "description": <description>,
+                    "location": <location>,
                     "match_score": <0-100 score>,
                     "key_matches": [<list of matching skills/requirements>],
                     "missing_qualifications": [<list of missing requirements>],
@@ -73,140 +77,96 @@ class ResumeJobAnalyzer:
                 ...
             ]
         }
-        Example:
-        {
-            results: [
-                {{
-                    "match_score": 85,
-                    "key_matches": ["Python", "ReactJS", "NextJS", "Typescript", "FastAPI", "AWS", "RESTful APIs"],
-                    "missing_qualifications": ["TensorFlow", "PyTorch", "Huggingface", "GCP"],
-                    "resume_suggestions": ["Add specific projects demonstrating use of machine learning libraries such as TensorFlow and PyTorch.", "Highlight any experience with GCP to match AWS experience."],
-                    "application_priority": "High",
-                    "reason": "Aaron's resume aligns well with the required tech stack and the role...t overshadow the strong overall match."
-                }},
-                {{
-                    "match_score": 80,
-                    "key_matches": ["Python", "NodeJS", "AI techniques", "communication skills"],
-                    "missing_qualifications": ["modern LLMs"],
-                    "resume_suggestions": ["Emphasize any experience with modern LLMs, perhaps detailing relevant projects or learning.", "Mention any specific contributions to healthcare technologies if available."],
-                    "application_priority": "Medium",
-                    "reason": "While Aaron aligns with many of the technical requirements, the emphasis on LLMs and ...nce or skills could improve his candidacy."
-                }}
-            ]
-        }
         """
         opt = self.estimate_tokens(op)  # estimate 131 tokens
-        sc = "You are an expert resume analyzer and job matcher."
-        sp = {
-            "role": "system",
-            "content": f"{sc}",
-        }
         sct = self.estimate_tokens(sc)  # estimate 10 tokens
         print(f"{opt=}, {sct=}")
-        results = []
-        batch = []
-        batch_indices = []  # Keep track of indices of jobs in the batch
-        init_token_in = (
+        all_results = []
+        current_batch = []
+        base_tokens = (
             self.resume_tokens + opt + sct + 15
         )  # estimate 1402 buffer for the words Resume, Job, etc, really about 2 each
-        print(f"{init_token_in=}")
-        token_count = init_token_in
-        aggregate_token_count = init_token_in
+        print(f"{base_tokens=}")
+        current_batch_tokens = base_tokens
 
-        for index, job in jobs_df.iterrows():
+        for job in jobs_df.iterrows():
             jd = job.to_dict()
             job_text = f"""
-            Title: {jd['title']}
-            Company: {jd['company']}
-            Description: {jd['description']}
-            Location: {jd['location']}
+            title: {jd['title']}
+            company: {jd['company']}
+            description: {jd['description']}
+            location: {jd['location']}
             """
 
             job_tokens = self.estimate_tokens(job_text)
 
             # If adding this job exceeds max tokens, process the current batch
-            if token_count + job_tokens > batch_max_tokens:
-                # Process the batch
-                batch_prompt = f"""
-                {op}
-                Resume:
-                {self.resume_text}
+            if current_batch_tokens + job_tokens > batch_max_tokens:
+                # Process current batch
+                batch_results = self._process_batch(current_batch, op, sc, model)
+                all_results.extend(batch_results)
 
-                Jobs List:
-                {''.join(batch)}
-                """
+                # Reset batch
+                current_batch = []
+                current_batch_tokens = base_tokens
 
-                response = self.client.chat.completions.create(
-                    model=model,
-                    messages=[
-                        sp,
-                        {"role": "user", "content": batch_prompt},
-                    ],
-                    response_format={"type": "json_object"},
-                )
-                try:
-                    result = json.loads(response.choices[0].message.content)
-                    if isinstance(result, dict):
-                        results_list = result.get("results", result)
-                    else:
-                        results_list = result
-                    for i, res in enumerate(results_list):
-                        res["index"] = batch_indices[i]  # Add index to each result
-                        results.append(res)
-                except json.JSONDecodeError as e:
-                    print(f"Error decoding JSON response: {e}")
-                    print(f"Response content: {response.choices[0].message.content}")
-                batch.clear()
-                # Reset token count
-                token_count = init_token_in
-
-            # Add job to batch
-            batch.append(job_text)
-            batch_indices.append(index)
-            token_count += job_tokens
-            aggregate_token_count += job_tokens
+            current_batch.append(job_text)
 
             # Stop if the total token count is about to exceed the input_max_tokens
-            if aggregate_token_count > input_max_tokens:
+            if current_batch_tokens > input_max_tokens:
                 print(
                     "Total token count exceeded the limit. Not adding more to batch, running final batch next."
                 )
                 break
 
-        # Process the final batch..seems un dry...tbh
-        if batch:
-            batch_prompt = f"""
-            {op}
-            Resume:
-            {self.resume_text}
+        # Process final batch if any remains
+        if current_batch:
+            batch_results = self._process_batch(current_batch, op, sc, model)
+            all_results.extend(batch_results)
 
-            Jobs:
-            {''.join(batch)}
-            """
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=[
-                    sp,
-                    {"role": "user", "content": batch_prompt},
-                ],
-                response_format={"type": "json_object"},
-            )
-            try:
-                result = json.loads(response.choices[0].message.content)
-                for i, res in enumerate(result["results"]):
-                    res["index"] = batch_indices[i]  # Add index to each result
-                    results.append(res)
-            except json.JSONDecodeError as e:
-                print(f"Error decoding JSON response: {e}")
-                print(f"Response content: {response.choices[0].message.content}")
+        # Convert results to DataFrame and merge with original data
+        return pd.DataFrame(all_results)
 
-        if not results:
-            print("No analyses were performed.")
-            return pd.DataFrame()
-        results_df = pd.DataFrame(results).set_index("index")
-        final_df = jobs_df.join(results_df, how="left")
+    def _process_batch(self, batch, operation_prompt, system_content, model):
+        """Process a batch of jobs and return analysis results"""
+        # Build prompt with all jobs in batch
+        job_list = "\n".join(batch)
+        full_prompt = f"""
+        {operation_prompt}
 
-        return final_df
+        Resume:
+        {self.resume_text}
+
+        Jobs List:
+        {job_list}
+        """
+
+        # Make API call
+        response = self.client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": full_prompt},
+            ],
+            response_format={"type": "json_object"},
+        )
+
+        try:
+            # Process response
+            analysis = json.loads(response.choices[0].message.content)
+
+            # Map results back to original indices
+            results = []
+            for job_idx, job in enumerate(batch):
+                result = analysis[job_idx] if isinstance(analysis, list) else analysis
+                result["index"] = job["index"]
+                results.append(result)
+
+            return results
+
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Error processing batch response: {e}")
+            return []
 
 
 def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -> None:
@@ -240,7 +200,7 @@ def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -
     ).execute()
 
     # Prepare data for the analysis tab
-    analysis_df = df[
+    analysis_columns = [
         [
             "title",
             "company",
@@ -253,24 +213,19 @@ def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -
             "reason",
             "job_url",
         ]
-    ].sort_values("match_score", ascending=False)
-    # Fill NaN values with empty lists
-    # TODO: MAKE RCA OF WHY THIS IS HAPPENING...
-    analysis_df["key_matches"] = analysis_df["key_matches"].apply(
-        lambda x: x if isinstance(x, list) else []
-    )
-    analysis_df["missing_qualifications"] = analysis_df["missing_qualifications"].apply(
-        lambda x: x if isinstance(x, list) else []
-    )
-    analysis_df["resume_suggestions"] = analysis_df["resume_suggestions"].apply(
-        lambda x: x if isinstance(x, list) else []
-    )
-
-    # Convert lists to strings for sheet compatibility
-    for col in ["key_matches", "missing_qualifications", "resume_suggestions"]:
-        analysis_df[col] = analysis_df[col].apply(
-            lambda x: "\n".join(f"• {item}" for item in x)
+    ]
+    analysis_df = (
+        df[analysis_columns]
+        .sort_values("match_score", ascending=False)
+        .apply(
+            lambda x: (
+                x.apply(format_cell_content)
+                if x.name
+                in ["key_matches", "missing_qualifications", "resume_suggestions"]
+                else x
+            )
         )
+    )
 
     # Update the sheet
     values = [analysis_df.columns.tolist()] + analysis_df.values.tolist()
@@ -319,6 +274,15 @@ def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -
     service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id, body={"requests": requests}
     ).execute()
+
+
+def format_cell_content(value) -> str:
+    """Format cell content for Google Sheets"""
+    if pd.isna(value) or value is None:
+        return ""
+    if isinstance(value, list):
+        return "\n".join(f"• {item}" for item in value)
+    return str(value)
 
 
 def setup_google_creds():
