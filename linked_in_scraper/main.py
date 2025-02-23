@@ -73,6 +73,7 @@ class ResumeJobAnalyzer:
                     "resume_suggestions": [<specific suggestions to improve resume for this role>],
                     "application_priority": <"High"/"Medium"/"Low">,
                     "reason": "<brief explanation of the match score and priority>"
+                    "job_url": <job_url>
                 }},
                 ...
             ]
@@ -89,13 +90,14 @@ class ResumeJobAnalyzer:
         print(f"{base_tokens=}")
         current_batch_tokens = base_tokens
 
-        for job in jobs_df.iterrows():
+        for _, job in jobs_df.iterrows():
             jd = job.to_dict()
             job_text = f"""
             title: {jd['title']}
             company: {jd['company']}
             description: {jd['description']}
             location: {jd['location']}
+            job_url: {jd['job_url']}
             """
 
             job_tokens = self.estimate_tokens(job_text)
@@ -154,16 +156,7 @@ class ResumeJobAnalyzer:
         try:
             # Process response
             analysis = json.loads(response.choices[0].message.content)
-
-            # Map results back to original indices
-            results = []
-            for job_idx, job in enumerate(batch):
-                result = analysis[job_idx] if isinstance(analysis, list) else analysis
-                result["index"] = job["index"]
-                results.append(result)
-
-            return results
-
+            return analysis["results"]
         except (json.JSONDecodeError, KeyError, IndexError) as e:
             print(f"Error processing batch response: {e}")
             return []
@@ -201,31 +194,26 @@ def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -
 
     # Prepare data for the analysis tab
     analysis_columns = [
-        [
-            "title",
-            "company",
-            "location",
-            "match_score",
-            "key_matches",
-            "missing_qualifications",
-            "resume_suggestions",
-            "application_priority",
-            "reason",
-            "job_url",
-        ]
+        "title",
+        "company",
+        "description",
+        "location",
+        "match_score",
+        "key_matches",
+        "missing_qualifications",
+        "resume_suggestions",
+        "application_priority",
+        "reason",
+        "job_url",
     ]
-    analysis_df = (
-        df[analysis_columns]
-        .sort_values("match_score", ascending=False)
-        .apply(
-            lambda x: (
-                x.apply(format_cell_content)
-                if x.name
-                in ["key_matches", "missing_qualifications", "resume_suggestions"]
-                else x
-            )
-        )
-    )
+
+    analysis_df = df[analysis_columns].sort_values("match_score", ascending=False)
+
+    # Format only the list columns
+    list_columns = ["key_matches", "missing_qualifications", "resume_suggestions"]
+    for col in list_columns:
+        if col in analysis_df.columns:
+            analysis_df[col] = analysis_df[col].apply(format_cell_content)
 
     # Update the sheet
     values = [analysis_df.columns.tolist()] + analysis_df.values.tolist()
@@ -278,8 +266,6 @@ def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -
 
 def format_cell_content(value) -> str:
     """Format cell content for Google Sheets"""
-    if pd.isna(value) or value is None:
-        return ""
     if isinstance(value, list):
         return "\n".join(f"• {item}" for item in value)
     return str(value)
