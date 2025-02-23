@@ -1057,5 +1057,5 @@ def main(
         click.echo(f"Spreadsheet ID: {spreadsheet_id}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
