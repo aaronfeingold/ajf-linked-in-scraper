@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import time
 import json
 import click
+import tiktoken
 from jobspy import scrape_jobs
 import pandas as pd
 import PyPDF2
@@ -19,11 +20,15 @@ GOOGLE_SCOPES = [
 ]
 
 
+OPENAI_DEFAULT_MODEL = "gpt-4-turbo"
+
+
 class ResumeJobAnalyzer:
     def __init__(self, openai_api_key: str):
         """Initialize with OpenAI API key"""
         self.client = OpenAI(api_key=openai_api_key)
         self.resume_text = None
+        self.resume_tokens = None
 
     def load_resume(self, pdf_path: str) -> None:
         """Load and extract text from resume PDF"""
@@ -32,66 +37,129 @@ class ResumeJobAnalyzer:
             self.resume_text = ""
             for page in reader.pages:
                 self.resume_text += page.extract_text()
+            self.resume_tokens = self.estimate_tokens(self.resume_text)  # estimate 1246
+            print(f"{self.resume_tokens=}")
 
-    def analyze_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze a single job against the loaded resume"""
+    def estimate_tokens(self, text, model=OPENAI_DEFAULT_MODEL):
+        # TODO: question if tiktoken can keep with the latest models
+        encoding = tiktoken.encoding_for_model(model)
+        # if you want to know the token count for a prompt
+        # you find the length of the list of tokens
+        return len(encoding.encode(text))
+
+    def batch_analyze_jobs(
+        self,
+        jobs_df: pd.DataFrame,
+        batch_max_tokens: int = 3800,
+        input_max_tokens: int = 100000,
+        model=OPENAI_DEFAULT_MODEL,
+    ) -> pd.DataFrame:
+        """Analyze all jobs in the DataFrame against the resume"""
         if not self.resume_text:
             raise ValueError("Resume not loaded. Call load_resume() first.")
+        sc = "You are an expert resume analyzer and job matcher."
+        op = """Analyze each job posting in the Jobs List against the candidate's resume.
+        Provide an array an array called "results" where each element is a JSON object with the following structure:
+        {
+            "results": [
+                {{
+                    "title": <title>,
+                    "company": <company>,
+                    "description": <description>,
+                    "location": <location>,
+                    "match_score": <0-100 score>,
+                    "key_matches": [<list of matching skills/requirements>],
+                    "missing_qualifications": [<list of missing requirements>],
+                    "resume_suggestions": [<specific suggestions to improve resume for this role>],
+                    "application_priority": <"High"/"Medium"/"Low">,
+                    "reason": "<brief explanation of the match score and priority>"
+                    "job_url": <job_url>
+                }},
+                ...
+            ]
+        }
+        """
+        opt = self.estimate_tokens(op)  # estimate 131 tokens
+        sct = self.estimate_tokens(sc)  # estimate 10 tokens
+        print(f"{opt=}, {sct=}")
+        all_results = []
+        current_batch = []
+        base_tokens = (
+            self.resume_tokens + opt + sct + 15
+        )  # estimate 1402 buffer for the words Resume, Job, etc, really about 2 each
+        print(f"{base_tokens=}")
+        current_batch_tokens = base_tokens
 
-        prompt = f"""Analyze this job posting against the candidate's resume. Provide a JSON response with the following structure:
-        {{
-            "match_score": <0-100 score>,
-            "key_matches": [<list of matching skills/requirements>],
-            "missing_qualifications": [<list of missing requirements>],
-            "resume_suggestions": [<specific suggestions to improve resume for this role>],
-            "application_priority": <"High"/"Medium"/"Low">,
-            "reason": "<brief explanation of the match score and priority>"
-        }}
+        for _, job in jobs_df.iterrows():
+            jd = job.to_dict()
+            job_text = f"""
+            title: {jd['title']}
+            company: {jd['company']}
+            description: {jd['description']}
+            location: {jd['location']}
+            job_url: {jd['job_url']}
+            """
+
+            job_tokens = self.estimate_tokens(job_text)
+
+            # If adding this job exceeds max tokens, process the current batch
+            if current_batch_tokens + job_tokens > batch_max_tokens:
+                # Process current batch
+                batch_results = self._process_batch(current_batch, op, sc, model)
+                all_results.extend(batch_results)
+
+                # Reset batch
+                current_batch = []
+                current_batch_tokens = base_tokens
+
+            current_batch.append(job_text)
+
+            # Stop if the total token count is about to exceed the input_max_tokens
+            if current_batch_tokens > input_max_tokens:
+                print(
+                    "Total token count exceeded the limit. Not adding more to batch, running final batch next."
+                )
+                break
+
+        # Process final batch if any remains
+        if current_batch:
+            batch_results = self._process_batch(current_batch, op, sc, model)
+            all_results.extend(batch_results)
+
+        # Convert results to DataFrame and merge with original data
+        return pd.DataFrame(all_results)
+
+    def _process_batch(self, batch, operation_prompt, system_content, model):
+        """Process a batch of jobs and return analysis results"""
+        # Build prompt with all jobs in batch
+        job_list = "\n".join(batch)
+        full_prompt = f"""
+        {operation_prompt}
 
         Resume:
         {self.resume_text}
 
-        Job Details:
-        Title: {job['title']}
-        Company: {job['company']}
-        Description: {job['description']}
-        Location: {job['location']}
+        Jobs List:
+        {job_list}
         """
 
+        # Make API call
         response = self.client.chat.completions.create(
-            model="gpt-4-turbo",
+            model=model,
             messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expert resume analyzer and job matcher.",
-                },
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": system_content},
+                {"role": "user", "content": full_prompt},
             ],
             response_format={"type": "json_object"},
         )
 
-        return json.loads(response.choices[0].message.content)
-
-    def batch_analyze_jobs(self, jobs_df: pd.DataFrame) -> pd.DataFrame:
-        """Analyze all jobs in the DataFrame against the resume"""
-        analyses = []
-
-        for _, job in jobs_df.iterrows():
-            try:
-                analysis = self.analyze_job(job.to_dict())
-                analyses.append({**job.to_dict(), **analysis})
-            except Exception as e:
-                error_message = str(e)
-                print(f"Error analyzing job {job['title']}: {error_message}")
-                if "exceeded your current quota" in error_message:
-                    print("Quota exceeded. Stopping analysis.")
-                    break
-
-        if not analyses:
-            print("No analyses were performed.")
-            return pd.DataFrame()
-
-        return pd.DataFrame(analyses)
+        try:
+            # Process response
+            analysis = json.loads(response.choices[0].message.content)
+            return analysis["results"]
+        except (json.JSONDecodeError, KeyError, IndexError) as e:
+            print(f"Error processing batch response: {e}")
+            return []
 
 
 def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -> None:
@@ -125,26 +193,27 @@ def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -
     ).execute()
 
     # Prepare data for the analysis tab
-    analysis_df = df[
-        [
-            "title",
-            "company",
-            "location",
-            "match_score",
-            "key_matches",
-            "missing_qualifications",
-            "resume_suggestions",
-            "application_priority",
-            "reason",
-            "job_url",
-        ]
-    ].sort_values("match_score", ascending=False)
+    analysis_columns = [
+        "title",
+        "company",
+        "description",
+        "location",
+        "match_score",
+        "key_matches",
+        "missing_qualifications",
+        "resume_suggestions",
+        "application_priority",
+        "reason",
+        "job_url",
+    ]
 
-    # Convert lists to strings for sheet compatibility
-    for col in ["key_matches", "missing_qualifications", "resume_suggestions"]:
-        analysis_df[col] = analysis_df[col].apply(
-            lambda x: "\n".join(f"• {item}" for item in x)
-        )
+    analysis_df = df[analysis_columns].sort_values("match_score", ascending=False)
+
+    # Format only the list columns
+    list_columns = ["key_matches", "missing_qualifications", "resume_suggestions"]
+    for col in list_columns:
+        if col in analysis_df.columns:
+            analysis_df[col] = analysis_df[col].apply(format_cell_content)
 
     # Update the sheet
     values = [analysis_df.columns.tolist()] + analysis_df.values.tolist()
@@ -193,6 +262,13 @@ def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -
     service.spreadsheets().batchUpdate(
         spreadsheetId=spreadsheet_id, body={"requests": requests}
     ).execute()
+
+
+def format_cell_content(value) -> str:
+    """Format cell content for Google Sheets"""
+    if isinstance(value, list):
+        return "\n".join(f"• {item}" for item in value)
+    return str(value)
 
 
 def setup_google_creds():
@@ -967,6 +1043,7 @@ def main(
         analyzer = ResumeJobAnalyzer(openai_api_key)
         analyzer.load_resume(resume_path)
         analyzed_df = analyzer.batch_analyze_jobs(final_jobs_df)
+        print(analyzed_df)
         if analyzed_df.empty:
             click.echo(
                 "No analyses were performed. Skipping update_sheet_with_analysis."
@@ -980,5 +1057,5 @@ def main(
         click.echo(f"Spreadsheet ID: {spreadsheet_id}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
