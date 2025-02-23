@@ -47,47 +47,6 @@ class ResumeJobAnalyzer:
         # you find the length of the list of tokens
         return len(encoding.encode(text))
 
-    def analyze_job(
-        self, job: Dict[str, Any], model=OPENAI_DEFAULT_MODEL
-    ) -> Dict[str, Any]:
-        """Analyze a single job against the loaded resume"""
-
-        prompt = f"""Analyze this job posting against the candidate's resume.
-        Provide a JSON response with the following structure:
-        {{
-            "match_score": <0-100 score>,
-            "key_matches": [<list of matching skills/requirements>],
-            "missing_qualifications": [<list of missing requirements>],
-            "resume_suggestions": [<specific suggestions to improve resume for this role>],
-            "application_priority": <"High"/"Medium"/"Low">,
-            "reason": "<brief explanation of the match score and priority>"
-        }}
-
-        Resume:
-        {self.resume_text}
-
-        Job Details:
-        Title: {job['title']}
-        Company: {job['company']}
-        Description: {job['description']}
-        Location: {job['location']}
-        """
-
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are an expert resume analyzer and job matcher.",
-                },
-                {"role": "user", "content": prompt},
-            ],
-            response_format={"type": "json_object"},
-            max_tokens=500,
-        )
-
-        return json.loads(response.choices[0].message.content)
-
     def batch_analyze_jobs(
         self,
         jobs_df: pd.DataFrame,
@@ -99,30 +58,62 @@ class ResumeJobAnalyzer:
         if not self.resume_text:
             raise ValueError("Resume not loaded. Call load_resume() first.")
 
-        op = """Analyze this job posting against the candidate's resume.
-        Provide a JSON response with the following structure:
-        {{
-            "match_score": <0-100 score>,
-            "key_matches": [<list of matching skills/requirements>],
-            "missing_qualifications": [<list of missing requirements>],
-            "resume_suggestions": [<specific suggestions to improve resume for this role>],
-            "application_priority": <"High"/"Medium"/"Low">,
-            "reason": "<brief explanation of the match score and priority>"
-        }}"""  # estimate 115 tokens
-        opt = self.estimate_tokens(op)
+        op = """Analyze each job posting in the Jobs List against the candidate's resume.
+        Provide an array an array called "results" where each element is a JSON object with the following structure:
+        {
+            "results": [
+                {{
+                    "match_score": <0-100 score>,
+                    "key_matches": [<list of matching skills/requirements>],
+                    "missing_qualifications": [<list of missing requirements>],
+                    "resume_suggestions": [<specific suggestions to improve resume for this role>],
+                    "application_priority": <"High"/"Medium"/"Low">,
+                    "reason": "<brief explanation of the match score and priority>"
+                }},
+                ...
+            ]
+        }
+        Example:
+        {
+            results: [
+                {{
+                    "match_score": 85,
+                    "key_matches": ["Python", "ReactJS", "NextJS", "Typescript", "FastAPI", "AWS", "RESTful APIs"],
+                    "missing_qualifications": ["TensorFlow", "PyTorch", "Huggingface", "GCP"],
+                    "resume_suggestions": ["Add specific projects demonstrating use of machine learning libraries such as TensorFlow and PyTorch.", "Highlight any experience with GCP to match AWS experience."],
+                    "application_priority": "High",
+                    "reason": "Aaron's resume aligns well with the required tech stack and the role...t overshadow the strong overall match."
+                }},
+                {{
+                    "match_score": 80,
+                    "key_matches": ["Python", "NodeJS", "AI techniques", "communication skills"],
+                    "missing_qualifications": ["modern LLMs"],
+                    "resume_suggestions": ["Emphasize any experience with modern LLMs, perhaps detailing relevant projects or learning.", "Mention any specific contributions to healthcare technologies if available."],
+                    "application_priority": "Medium",
+                    "reason": "While Aaron aligns with many of the technical requirements, the emphasis on LLMs and ...nce or skills could improve his candidacy."
+                }}
+            ]
+        }
+        """
+        opt = self.estimate_tokens(op)  # estimate 131 tokens
         sc = "You are an expert resume analyzer and job matcher."
-        sct = self.estimate_tokens(sc)
+        sp = {
+            "role": "system",
+            "content": f"{sc}",
+        }
+        sct = self.estimate_tokens(sc)  # estimate 10 tokens
         print(f"{opt=}, {sct=}")
         results = []
         batch = []
+        batch_indices = []  # Keep track of indices of jobs in the batch
         init_token_in = (
             self.resume_tokens + opt + sct + 15
-        )  # buffer for the words Resume, Job, etc, really about 2 each
+        )  # estimate 1402 buffer for the words Resume, Job, etc, really about 2 each
         print(f"{init_token_in=}")
         token_count = init_token_in
         aggregate_token_count = init_token_in
 
-        for _, job in jobs_df.iterrows():
+        for index, job in jobs_df.iterrows():
             jd = job.to_dict()
             job_text = f"""
             Title: {jd['title']}
@@ -141,27 +132,37 @@ class ResumeJobAnalyzer:
                 Resume:
                 {self.resume_text}
 
-                Jobs:
+                Jobs List:
                 {''.join(batch)}
                 """
+
                 response = self.client.chat.completions.create(
                     model=model,
                     messages=[
-                        {
-                            "role": "system",
-                            "content": f"{sc}",
-                        },
+                        sp,
                         {"role": "user", "content": batch_prompt},
                     ],
                     response_format={"type": "json_object"},
                 )
-                results.extend(json.loads(response.choices[0].message.content))
+                try:
+                    result = json.loads(response.choices[0].message.content)
+                    if isinstance(result, dict):
+                        results_list = result.get("results", result)
+                    else:
+                        results_list = result
+                    for i, res in enumerate(results_list):
+                        res["index"] = batch_indices[i]  # Add index to each result
+                        results.append(res)
+                except json.JSONDecodeError as e:
+                    print(f"Error decoding JSON response: {e}")
+                    print(f"Response content: {response.choices[0].message.content}")
                 batch.clear()
                 # Reset token count
                 token_count = init_token_in
 
             # Add job to batch
             batch.append(job_text)
+            batch_indices.append(index)
             token_count += job_tokens
             aggregate_token_count += job_tokens
 
@@ -172,7 +173,7 @@ class ResumeJobAnalyzer:
                 )
                 break
 
-        # Process the final batch
+        # Process the final batch..seems un dry...tbh
         if batch:
             batch_prompt = f"""
             {op}
@@ -184,16 +185,28 @@ class ResumeJobAnalyzer:
             """
             response = self.client.chat.completions.create(
                 model=model,
-                messages=[{"role": "user", "content": batch_prompt}],
+                messages=[
+                    sp,
+                    {"role": "user", "content": batch_prompt},
+                ],
                 response_format={"type": "json_object"},
             )
-            results.extend(json.loads(response.choices[0].message.content))
+            try:
+                result = json.loads(response.choices[0].message.content)
+                for i, res in enumerate(result["results"]):
+                    res["index"] = batch_indices[i]  # Add index to each result
+                    results.append(res)
+            except json.JSONDecodeError as e:
+                print(f"Error decoding JSON response: {e}")
+                print(f"Response content: {response.choices[0].message.content}")
 
         if not results:
             print("No analyses were performed.")
             return pd.DataFrame()
+        results_df = pd.DataFrame(results).set_index("index")
+        final_df = jobs_df.join(results_df, how="left")
 
-        return pd.DataFrame(results)
+        return final_df
 
 
 def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -> None:
@@ -241,6 +254,17 @@ def update_sheet_with_analysis(service, spreadsheet_id: str, df: pd.DataFrame) -
             "job_url",
         ]
     ].sort_values("match_score", ascending=False)
+    # Fill NaN values with empty lists
+    # TODO: MAKE RCA OF WHY THIS IS HAPPENING...
+    analysis_df["key_matches"] = analysis_df["key_matches"].apply(
+        lambda x: x if isinstance(x, list) else []
+    )
+    analysis_df["missing_qualifications"] = analysis_df["missing_qualifications"].apply(
+        lambda x: x if isinstance(x, list) else []
+    )
+    analysis_df["resume_suggestions"] = analysis_df["resume_suggestions"].apply(
+        lambda x: x if isinstance(x, list) else []
+    )
 
     # Convert lists to strings for sheet compatibility
     for col in ["key_matches", "missing_qualifications", "resume_suggestions"]:
