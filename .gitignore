@@ -41,3 +41,6 @@ data/
 ajf*
 *.pdf
 commands.sh
+
+# Environment variables
+.env
