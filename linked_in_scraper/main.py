@@ -13,6 +13,11 @@ from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from datetime import datetime, date
 from tenacity import retry, stop_after_attempt, wait_exponential
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
 
 GOOGLE_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -273,7 +278,7 @@ def format_cell_content(value) -> str:
 
 def setup_google_creds():
     return service_account.Credentials.from_service_account_file(
-        "ajf-live-re-wire-e162edab8ad3.json", scopes=GOOGLE_SCOPES
+        os.getenv("GOOGLE_SERVICE_ACCOUNT_FILE"), scopes=GOOGLE_SCOPES
     )
 
 
@@ -297,7 +302,7 @@ def create_new_sheet(sheets_service, drive_service, title):
             body={
                 "type": "user",
                 "role": "writer",
-                "emailAddress": "ajfeingold88@gmail.com",
+                "emailAddress": os.getenv("GOOGLE_EMAIL_ADDRESS_TO_SHARE_WITH"),
             },
         ).execute()
 
@@ -952,7 +957,12 @@ def prepare_jobs_data(new_jobs_df, existing_jobs_df=None):
 )
 @click.option("--max-retries", default=3, help="Maximum retry attempts per batch")
 @click.option("--resume-path", type=str, help="Path to your resume PDF")
-@click.option("--openai-api-key", type=str, help="OpenAI API key")
+@click.option(
+    "--openai-api-key",
+    type=str,
+    default=os.getenv("OPENAI_API_KEY"),
+    help="OpenAI API key",
+)
 def main(
     search_term,
     location,
