@@ -34,6 +34,9 @@ class ResumeJobAnalyzer:
         self.client = OpenAI(api_key=openai_api_key)
         self.resume_text = None
         self.resume_tokens = None
+        # GPT-4-turbo has a 128K token context window
+        self.max_tokens = 120000  # Leave some buffer for safety
+        self.max_jobs_per_batch = 20  # Reduced from 50 to ensure better processing
 
     def load_resume(self, pdf_path: str) -> None:
         """Load and extract text from resume PDF"""
@@ -42,32 +45,53 @@ class ResumeJobAnalyzer:
             self.resume_text = ""
             for page in reader.pages:
                 self.resume_text += page.extract_text()
-            self.resume_tokens = self.estimate_tokens(self.resume_text)  # estimate 1246
-            print(f"{self.resume_tokens=}")
+            self.resume_tokens = self.estimate_tokens(self.resume_text)
+            print(f"Resume tokens: {self.resume_tokens}")
 
     def estimate_tokens(self, text, model=OPENAI_DEFAULT_MODEL):
-        # TODO: question if tiktoken can keep with the latest models
+        """Estimate the number of tokens in a text string"""
         encoding = tiktoken.encoding_for_model(model)
-        # if you want to know the token count for a prompt
-        # you find the length of the list of tokens
         return len(encoding.encode(text))
+
+    def prepare_job_text(self, job):
+        """Prepare job text for analysis"""
+        jd = job.to_dict()
+        # Create a shorter job description to reduce token count
+        # Limit description to first 2000 characters if it's longer
+        if isinstance(jd["description"], str) and len(jd["description"]) > 2000:
+            truncated_description = jd["description"][:2000] + "..."
+        else:
+            truncated_description = jd["description"]
+
+        return {
+            "text": f"""
+            title: {jd['title']}
+            company: {jd['company']}
+            description: {truncated_description}
+            location: {jd['location']}
+            job_url: {jd['job_url']}
+            """,
+            "original": jd  # Keep original job data for reference
+        }
 
     def batch_analyze_jobs(
         self,
         jobs_df: pd.DataFrame,
-        batch_max_tokens: int = 3800,
-        input_max_tokens: int = 100000,
+        batch_max_tokens: int = 120000,
+        input_max_tokens: int = 1000000,
         model=OPENAI_DEFAULT_MODEL,
+        delay_between_batches: float = 60.0,
     ) -> pd.DataFrame:
-        """Analyze all jobs in the DataFrame against the resume"""
+        """Analyze all jobs in the DataFrame against the resume with rate limiting"""
         if not self.resume_text:
             raise ValueError("Resume not loaded. Call load_resume() first.")
+
         sc = "You are an expert resume analyzer and job matcher."
         op = """Analyze each job posting in the Jobs List against the candidate's resume.
-        Provide an array an array called "results" where each element is a JSON object with the following structure:
+        Provide an array--with a length equal to the number of jobs in the Jobs List--called "results" where each element is a JSON object with the following structure:
         {
             "results": [
-                {{
+                {
                     "title": <title>,
                     "company": <company>,
                     "description": <description>,
@@ -79,91 +103,185 @@ class ResumeJobAnalyzer:
                     "application_priority": <"High"/"Medium"/"Low">,
                     "reason": "<brief explanation of the match score and priority>"
                     "job_url": <job_url>
-                }},
+                },
                 ...
             ]
         }
         """
-        opt = self.estimate_tokens(op)  # estimate 131 tokens
-        sct = self.estimate_tokens(sc)  # estimate 10 tokens
-        print(f"{opt=}, {sct=}")
+        opt = self.estimate_tokens(op)
+        sct = self.estimate_tokens(sc)
+        print(f"Operation prompt tokens: {opt}, System content tokens: {sct}")
+
         all_results = []
         current_batch = []
-        base_tokens = (
-            self.resume_tokens + opt + sct + 15
-        )  # estimate 1402 buffer for the words Resume, Job, etc, really about 2 each
-        print(f"{base_tokens=}")
+        base_tokens = self.resume_tokens + opt + sct + 15  # Buffer for extra words
         current_batch_tokens = base_tokens
+        total_tokens_in = 0
+        jobs_processed = 0
+        total_jobs = len(jobs_df)
 
-        for _, job in jobs_df.iterrows():
-            jd = job.to_dict()
-            job_text = f"""
-            title: {jd['title']}
-            company: {jd['company']}
-            description: {jd['description']}
-            location: {jd['location']}
-            job_url: {jd['job_url']}
-            """
+        print(f"Starting analysis of {total_jobs} jobs...")
 
-            job_tokens = self.estimate_tokens(job_text)
+        # Process in smaller batches
+        for idx, job in jobs_df.iterrows():
+            job_data = self.prepare_job_text(job)
+            job_tokens = self.estimate_tokens(job_data["text"])
 
-            # If adding this job exceeds max tokens, process the current batch
-            if current_batch_tokens + job_tokens > batch_max_tokens:
-                # Process current batch
+            # Process batch if we've hit the token limit or max jobs per batch
+            if (current_batch_tokens + job_tokens > batch_max_tokens or
+                len(current_batch) >= self.max_jobs_per_batch):
+
+                print(f"\nProcessing batch {len(all_results) + 1} with {len(current_batch)} jobs ({current_batch_tokens} tokens)")
                 batch_results = self._process_batch(current_batch, op, sc, model)
-                all_results.extend(batch_results)
 
-                # Reset batch
+                if batch_results:
+                    # Ensure we have results for all jobs in the batch
+                    if len(batch_results) != len(current_batch):
+                        print(f"Warning: Got {len(batch_results)} results for {len(current_batch)} jobs")
+                        # Try to match results with jobs using job_url
+                        matched_results = []
+                        for job_data in current_batch:
+                            job_url = job_data["original"]["job_url"]
+                            matching_result = next(
+                                (r for r in batch_results if r["job_url"] == job_url),
+                                None
+                            )
+                            if matching_result:
+                                matched_results.append(matching_result)
+                            else:
+                                print(f"Warning: No result found for job {job_url}")
+                        batch_results = matched_results
+
+                    all_results.extend(batch_results)
+                    jobs_processed += len(batch_results)
+                    print(f"Successfully processed {jobs_processed}/{total_jobs} jobs")
+
+                # Reset batch and add delay to avoid rate limits
                 current_batch = []
                 current_batch_tokens = base_tokens
 
-            current_batch.append(job_text)
+                print(f"Waiting {delay_between_batches} seconds before next batch...")
+                time.sleep(delay_between_batches)
 
-            # Stop if the total token count is about to exceed the input_max_tokens
-            if current_batch_tokens > input_max_tokens:
-                print(
-                    "Total token count exceeded the limit. Not adding more to batch, running final batch next."
-                )
+            current_batch.append(job_data)
+            current_batch_tokens += job_tokens
+            total_tokens_in += job_tokens
+
+            # Stop if we've processed all jobs or hit the total token limit
+            if total_tokens_in > input_max_tokens:
+                print(f"Total token count approaching limit ({total_tokens_in}/{input_max_tokens})")
                 break
 
         # Process final batch if any remains
         if current_batch:
+            print(f"\nProcessing final batch with {len(current_batch)} jobs")
+            time.sleep(delay_between_batches)
             batch_results = self._process_batch(current_batch, op, sc, model)
-            all_results.extend(batch_results)
+            if batch_results:
+                # Ensure we have results for all jobs in the final batch
+                if len(batch_results) != len(current_batch):
+                    print(f"Warning: Got {len(batch_results)} results for {len(current_batch)} jobs")
+                    # Try to match results with jobs using job_url
+                    matched_results = []
+                    for job_data in current_batch:
+                        job_url = job_data["original"]["job_url"]
+                        matching_result = next(
+                            (r for r in batch_results if r["job_url"] == job_url),
+                            None
+                        )
+                        if matching_result:
+                            matched_results.append(matching_result)
+                        else:
+                            print(f"Warning: No result found for job {job_url}")
+                    batch_results = matched_results
 
-        # Convert results to DataFrame and merge with original data
-        return pd.DataFrame(all_results)
+                all_results.extend(batch_results)
+                jobs_processed += len(batch_results)
+                print(f"Successfully processed {jobs_processed}/{total_jobs} jobs total")
+
+        # Convert results to DataFrame
+        if all_results:
+            print(f"\nAnalysis complete. Processed {len(all_results)} jobs out of {total_jobs} total jobs.")
+            return pd.DataFrame(all_results)
+        else:
+            print("No results were generated.")
+            return pd.DataFrame()
 
     def _process_batch(self, batch, operation_prompt, system_content, model):
         """Process a batch of jobs and return analysis results"""
-        # Build prompt with all jobs in batch
-        job_list = "\n".join(batch)
-        full_prompt = f"""
-        {operation_prompt}
-
-        Resume:
-        {self.resume_text}
-
-        Jobs List:
-        {job_list}
-        """
-
-        # Make API call
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": full_prompt},
-            ],
-            response_format={"type": "json_object"},
-        )
-
         try:
-            # Process response
-            analysis = json.loads(response.choices[0].message.content)
-            return analysis["results"]
-        except (json.JSONDecodeError, KeyError, IndexError) as e:
-            print(f"Error processing batch response: {e}")
+            # Build prompt with all jobs in batch
+            job_list = "\n".join(job["text"] for job in batch)
+            full_prompt = f"""
+            {operation_prompt}
+
+            Resume:
+            {self.resume_text}
+
+            Jobs List:
+            {job_list}
+            """
+
+            # Calculate tokens for this request
+            total_tokens = self.estimate_tokens(full_prompt) + self.estimate_tokens(system_content)
+            print(f"Sending request with {total_tokens} tokens")
+
+            # Make API call with retries
+            max_retries = 3
+            retry_count = 0
+            while retry_count < max_retries:
+                try:
+                    response = self.client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": system_content},
+                            {"role": "user", "content": full_prompt},
+                        ],
+                        response_format={"type": "json_object"},
+                    )
+
+                    if response.usage:
+                        print(f"Usage - Completion: {response.usage.completion_tokens}, Prompt: {response.usage.prompt_tokens}")
+
+                    analysis = json.loads(response.choices[0].message.content)
+                    results = analysis.get("results", [])
+
+                    if not results:
+                        print("Warning: No results returned from API")
+                        return []
+
+                    # Verify we have results for all jobs in the batch
+                    if len(results) != len(batch):
+                        print(f"Warning: Got {len(results)} results for {len(batch)} jobs")
+                        # Try to match results with jobs using job_url
+                        matched_results = []
+                        for job_data in batch:
+                            job_url = job_data["original"]["job_url"]
+                            matching_result = next(
+                                (r for r in results if r["job_url"] == job_url),
+                                None
+                            )
+                            if matching_result:
+                                matched_results.append(matching_result)
+                            else:
+                                print(f"Warning: No result found for job {job_url}")
+                        return matched_results
+
+                    return results
+
+                except Exception as e:
+                    retry_count += 1
+                    if retry_count >= max_retries:
+                        print(f"Error processing batch after {max_retries} retries: {e}")
+                        return []
+                    print(f"Retry {retry_count}/{max_retries} after error: {e}")
+                    time.sleep(60 * retry_count)  # Exponential backoff
+
+        except json.JSONDecodeError as e:
+            print(f"Error decoding JSON response: {e}")
+            return []
+        except Exception as e:
+            print(f"Error processing batch: {e}")
             return []
 
 
@@ -937,7 +1055,7 @@ def prepare_jobs_data(new_jobs_df, existing_jobs_df=None):
     default="fulltime",
     help="Type of job",
 )
-@click.option("--country", default="UK", help="Country code for Indeed search")
+@click.option("--country", default="USA", help="Country code for Indeed search")
 @click.option(
     "--fetch-description/--no-fetch-description",
     default=True,
@@ -963,6 +1081,12 @@ def prepare_jobs_data(new_jobs_df, existing_jobs_df=None):
     default=os.getenv("OPENAI_API_KEY"),
     help="OpenAI API key",
 )
+@click.option(
+    "--analyze-delay",
+    type=float,
+    default=62.0,  # Just over a minute to respect the rate limit
+    help="Delay between API calls in seconds",
+)
 def main(
     search_term,
     location,
@@ -979,13 +1103,14 @@ def main(
     max_retries,
     resume_path,
     openai_api_key,
+    analyze_delay,
 ):
     """Scrape jobs from various job sites with customizable parameters."""
     # Initialize Google Sheets service
     creds = setup_google_creds()
-    # TODO: refactor into loop if we are really repeating
     sheets_service = google_service("sheets", "v4", creds)
     drive_service = google_service("drive", "v3", creds)
+
     # Create new spreadsheet
     sheet_title = (
         f"Job Search - {search_term} - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
@@ -1050,18 +1175,27 @@ def main(
     success = update_analytics_sheet(sheets_service, spreadsheet_id, analytics)
 
     if resume_path and openai_api_key:
-        analyzer = ResumeJobAnalyzer(openai_api_key)
-        analyzer.load_resume(resume_path)
-        analyzed_df = analyzer.batch_analyze_jobs(final_jobs_df)
-        print(analyzed_df)
-        if analyzed_df.empty:
-            click.echo(
-                "No analyses were performed. Skipping update_sheet_with_analysis."
+        try:
+            click.echo("Starting resume analysis...")
+            analyzer = ResumeJobAnalyzer(openai_api_key)
+            analyzer.load_resume(resume_path)
+
+            # Use custom batch size and delay for analysis
+            analyzed_df = analyzer.batch_analyze_jobs(
+                final_jobs_df,
+                delay_between_batches=analyze_delay,
             )
-        else:
-            success = update_sheet_with_analysis(
-                sheets_service, spreadsheet_id, analyzed_df
-            )
+
+            if analyzed_df.empty:
+                click.echo("No analyses were performed. Check for API errors above.")
+            else:
+                click.echo(f"Successfully analyzed {len(analyzed_df)} jobs")
+                success = update_sheet_with_analysis(
+                    sheets_service, spreadsheet_id, analyzed_df
+                )
+        except Exception as e:
+            click.echo(f"Error during analysis: {e}", err=True)
+
     if success:
         click.echo(f"Successfully saved {len(all_jobs)} jobs to Google Sheets")
         click.echo(f"Spreadsheet ID: {spreadsheet_id}")
